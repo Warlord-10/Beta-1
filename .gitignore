@@ -9,4 +9,7 @@ wheels/
 # Virtual environments
 .venv
 
+# Additionals
 temp.py
+.env
+/logs

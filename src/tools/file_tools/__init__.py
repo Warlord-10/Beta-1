@@ -10,8 +10,10 @@ from src.tools.file_tools.delete_file import delete_file
 from src.tools.file_tools.get_file_info import get_file_info
 from src.tools.file_tools.search_files import search_files
 from src.tools.file_tools.search_content import search_content
+from src.tools.file_tools.change_directory import change_directory
 
 file_tools = [
+    change_directory,
     read_file,
     write_file,
     list_directory,
@@ -26,6 +28,7 @@ file_tools = [
 
 __all__ = [
     "file_tools",
+    "change_directory",
     "read_file",
     "write_file",
     "list_directory",

@@ -1,34 +1,73 @@
-"""LangGraph graph definition for the File Management Agent."""
+"""LangGraph graph definition for the File Management Agent.
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.prebuilt import create_react_agent
+This agent uses a ReAct loop with access to a current working directory (cwd)
+that persists across conversation turns.
+"""
+
+from __future__ import annotations
+
+import operator
+from typing import Annotated, TypedDict
+from langchain_core.messages import AnyMessage
+from langchain.agents import AgentState
+from langchain.messages import SystemMessage
 
 from src.agents.fileagent.agent_tools import file_agent_tools
 from src.agents.fileagent.system_prompt import FILE_AGENT_SYSTEM_PROMPT
 
+from langchain.agents import create_agent
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    AgentState,
+    ModelRequest,
+    ModelResponse,
+)
+from langgraph.runtime import Runtime
+from typing import Any, Callable
+
+
+
+class FileAgentState(AgentState):
+    """State for the file agent sub-graph."""
+    messages: Annotated[list[AnyMessage], operator.add]
+    cwd: str
+    current_task: str = None
+
+class FileAgentMiddleware(AgentMiddleware):
+    """Middleware for the file agent sub-graph."""
+
+    def before_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+        context_message = SystemMessage("Current working directory: " + state["cwd"])
+        state["messages"].append(context_message)
+        return state
+
+    # def after_model(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+    #     last_message = state["messages"][-1]
+    #     if hasattr(last_message, "tool_calls"):
+    #         for tool_call in last_message.tool_calls:
+    #             if tool_call["name"] == "change_directory":
+    #                 state["cwd"] = tool_call["args"]["path"]
+    #     return state
+        
+
 
 def build_file_agent_graph():
-    """Build and return the compiled LangGraph for the file agent.
-
-    The graph uses a ReAct (Reason + Act) loop:
-        1. The LLM receives the user message + system prompt.
-        2. It decides which tool(s) to call.
-        3. Tool results are fed back to the LLM.
-        4. The LLM produces a final human-readable response.
-
-    Returns:
-        A compiled LangGraph `CompiledGraph` ready for `.invoke()` or `.stream()`.
-    """
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.0-flash",
-        temperature=0,
+        temperature=1,
+        max_output_tokens=250,
     )
 
-    graph = create_react_agent(
+    graph = create_agent(
         model=llm,
         tools=file_agent_tools,
-        prompt=FILE_AGENT_SYSTEM_PROMPT,
+        system_prompt=FILE_AGENT_SYSTEM_PROMPT,
+        state_schema=FileAgentState,
+        middleware=[FileAgentMiddleware()],
     )
+
 
     return graph
 
