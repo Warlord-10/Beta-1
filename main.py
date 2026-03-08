@@ -43,6 +43,11 @@ def main():
         result = main_graph.invoke(
             {
                 "messages": [HumanMessage(content=user_input)],
+                "user_query": user_input,
+                "complexity": "",
+                "plan": [],
+                "results": [],
+                "final_response": "",
                 "cwd": cwd,
             }
         )
@@ -50,10 +55,14 @@ def main():
         # Update cwd from agent's response (it may have changed)
         cwd = result.get("cwd", cwd)
 
-        # The last message is the AI's final response
-        ai_response = result["messages"][-1].content
-        logger.info("AI response: %s", ai_response[:200])
-        print(f"\nBeta-1: {ai_response}\n")
+        # Get the final response
+        final_response = result.get("final_response", "")
+        if not final_response:
+            # Fallback: last message content
+            final_response = result["messages"][-1].content if result.get("messages") else "No response."
+
+        logger.info("AI response: %s", final_response[:200])
+        print(f"\nBeta-1: {final_response}\n")
 
 
 if __name__ == "__main__":

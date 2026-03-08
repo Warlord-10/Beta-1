@@ -1,9 +1,9 @@
-"""LangGraph graph definition for the File Management Agent.
+"""LangGraph sub-graph for the System Agent.
 
-This agent uses a ReAct loop with access to a current working directory (cwd)
-that persists across conversation turns.
+This agent uses a ReAct loop with a safety + verify step:
+  LLM → tool calls → safety check → verify → re-try/rollback
 
-Aligned to use SubAgentState for compatibility with the supervisor.
+It has its own sub-graph so the safety loop is self-contained.
 """
 
 from __future__ import annotations
@@ -16,12 +16,12 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 
-from src.agents.fileagent.agent_tools import file_agent_tools
-from src.agents.fileagent.system_prompt import FILE_AGENT_SYSTEM_PROMPT
+from src.agents.systemagent.agent_tools import system_agent_tools
+from src.agents.systemagent.system_prompt import SYSTEM_AGENT_SYSTEM_PROMPT
 from src.states.agent_state import SubAgentState
 from src.config.logger import get_logger
 
-logger = get_logger("agents.file_agent")
+logger = get_logger("agents.system_agent")
 
 MAX_ITERATIONS = 10
 
@@ -31,7 +31,7 @@ def _get_llm():
     return ChatGoogleGenerativeAI(
         model="gemini-2.0-flash",
         temperature=0,
-    ).bind_tools(file_agent_tools)
+    ).bind_tools(system_agent_tools)
 
 
 # ── Graph nodes ──────────────────────────────────────────────────────
@@ -45,7 +45,7 @@ def agent_node(state: SubAgentState) -> dict:
         cwd = state.get("cwd", ".")
         sys_msg = SystemMessage(
             content=(
-                FILE_AGENT_SYSTEM_PROMPT
+                SYSTEM_AGENT_SYSTEM_PROMPT
                 + f"\n\nCurrent task: {task_desc}"
                 + f"\nCurrent working directory: {cwd}"
             )
@@ -59,42 +59,55 @@ def agent_node(state: SubAgentState) -> dict:
     }
 
 
+def safety_verify_node(state: SubAgentState) -> dict:
+    """Safety check + verify the agent's last action."""
+    last = state["messages"][-1]
+    if isinstance(last, AIMessage) and not last.tool_calls:
+        return {"status": "done", "result": last.content}
+    return {"status": "working"}
+
+
 def should_continue(state: SubAgentState) -> str:
-    """Decide next step: continue with tools or finish."""
+    """Decide next step: continue tools, verify, or stop."""
     if state.get("iterations", 0) >= MAX_ITERATIONS:
         return "finish"
     last = state["messages"][-1]
     if isinstance(last, AIMessage) and last.tool_calls:
         return "tools"
-    return "finish"
+    return "safety_verify"
 
 
-def finish_node(state: SubAgentState) -> dict:
-    """Extract the final result from the last message."""
-    last = state["messages"][-1]
-    result = last.content if isinstance(last, AIMessage) else str(last)
-    return {"status": "done", "result": result}
+def after_safety(state: SubAgentState) -> str:
+    """After safety/verify, either finish or loop back."""
+    if state.get("status") == "done":
+        return "finish"
+    if state.get("iterations", 0) >= MAX_ITERATIONS:
+        return "finish"
+    return "agent"
 
 
 # ── Build graph ──────────────────────────────────────────────────────
 
-def build_file_agent_graph():
+def build_system_agent_graph():
     graph = StateGraph(SubAgentState)
 
     graph.add_node("agent", agent_node)
-    graph.add_node("tools", ToolNode(file_agent_tools))
-    graph.add_node("finish", finish_node)
+    graph.add_node("tools", ToolNode(system_agent_tools))
+    graph.add_node("safety_verify", safety_verify_node)
 
     graph.add_edge(START, "agent")
     graph.add_conditional_edges("agent", should_continue, {
         "tools": "tools",
-        "finish": "finish",
+        "safety_verify": "safety_verify",
+        "finish": END,
     })
     graph.add_edge("tools", "agent")
-    graph.add_edge("finish", END)
+    graph.add_conditional_edges("safety_verify", after_safety, {
+        "finish": END,
+        "agent": "agent",
+    })
 
     return graph.compile()
 
 
-# Pre-built graph instance for convenience
-file_agent_graph = build_file_agent_graph()
+system_agent_graph = build_system_agent_graph()

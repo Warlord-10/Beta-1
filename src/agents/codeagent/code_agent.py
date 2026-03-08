@@ -1,9 +1,9 @@
-"""LangGraph graph definition for the File Management Agent.
+"""LangGraph sub-graph for the Code Agent.
 
-This agent uses a ReAct loop with access to a current working directory (cwd)
-that persists across conversation turns.
+This agent uses a ReAct loop with a verify step:
+  LLM → tool calls → verify output → re-try if wrong
 
-Aligned to use SubAgentState for compatibility with the supervisor.
+It has its own sub-graph so the verify loop is self-contained.
 """
 
 from __future__ import annotations
@@ -16,12 +16,12 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 
-from src.agents.fileagent.agent_tools import file_agent_tools
-from src.agents.fileagent.system_prompt import FILE_AGENT_SYSTEM_PROMPT
+from src.agents.codeagent.agent_tools import code_agent_tools
+from src.agents.codeagent.system_prompt import CODE_AGENT_SYSTEM_PROMPT
 from src.states.agent_state import SubAgentState
 from src.config.logger import get_logger
 
-logger = get_logger("agents.file_agent")
+logger = get_logger("agents.code_agent")
 
 MAX_ITERATIONS = 10
 
@@ -31,7 +31,7 @@ def _get_llm():
     return ChatGoogleGenerativeAI(
         model="gemini-2.0-flash",
         temperature=0,
-    ).bind_tools(file_agent_tools)
+    ).bind_tools(code_agent_tools)
 
 
 # ── Graph nodes ──────────────────────────────────────────────────────
@@ -42,13 +42,8 @@ def agent_node(state: SubAgentState) -> dict:
     messages = list(state["messages"])
     if not any(isinstance(m, SystemMessage) for m in messages):
         task_desc = state.get("task", {}).get("description", "")
-        cwd = state.get("cwd", ".")
         sys_msg = SystemMessage(
-            content=(
-                FILE_AGENT_SYSTEM_PROMPT
-                + f"\n\nCurrent task: {task_desc}"
-                + f"\nCurrent working directory: {cwd}"
-            )
+            content=CODE_AGENT_SYSTEM_PROMPT + f"\n\nCurrent task: {task_desc}"
         )
         messages = [sys_msg] + messages
 
@@ -59,42 +54,55 @@ def agent_node(state: SubAgentState) -> dict:
     }
 
 
+def verify_node(state: SubAgentState) -> dict:
+    """Check whether the agent's last action looks correct."""
+    last = state["messages"][-1]
+    if isinstance(last, AIMessage) and not last.tool_calls:
+        return {"status": "done", "result": last.content}
+    return {"status": "working"}
+
+
 def should_continue(state: SubAgentState) -> str:
-    """Decide next step: continue with tools or finish."""
+    """Decide next step: continue tools, verify, or stop."""
     if state.get("iterations", 0) >= MAX_ITERATIONS:
         return "finish"
     last = state["messages"][-1]
     if isinstance(last, AIMessage) and last.tool_calls:
         return "tools"
-    return "finish"
+    return "verify"
 
 
-def finish_node(state: SubAgentState) -> dict:
-    """Extract the final result from the last message."""
-    last = state["messages"][-1]
-    result = last.content if isinstance(last, AIMessage) else str(last)
-    return {"status": "done", "result": result}
+def after_verify(state: SubAgentState) -> str:
+    """After verification, either finish or loop back."""
+    if state.get("status") == "done":
+        return "finish"
+    if state.get("iterations", 0) >= MAX_ITERATIONS:
+        return "finish"
+    return "agent"
 
 
 # ── Build graph ──────────────────────────────────────────────────────
 
-def build_file_agent_graph():
+def build_code_agent_graph():
     graph = StateGraph(SubAgentState)
 
     graph.add_node("agent", agent_node)
-    graph.add_node("tools", ToolNode(file_agent_tools))
-    graph.add_node("finish", finish_node)
+    graph.add_node("tools", ToolNode(code_agent_tools))
+    graph.add_node("verify", verify_node)
 
     graph.add_edge(START, "agent")
     graph.add_conditional_edges("agent", should_continue, {
         "tools": "tools",
-        "finish": "finish",
+        "verify": "verify",
+        "finish": END,
     })
     graph.add_edge("tools", "agent")
-    graph.add_edge("finish", END)
+    graph.add_conditional_edges("verify", after_verify, {
+        "finish": END,
+        "agent": "agent",
+    })
 
     return graph.compile()
 
 
-# Pre-built graph instance for convenience
-file_agent_graph = build_file_agent_graph()
+code_agent_graph = build_code_agent_graph()

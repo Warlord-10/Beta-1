@@ -1,9 +1,7 @@
-"""LangGraph graph definition for the File Management Agent.
+"""LangGraph sub-graph for the Search Agent.
 
-This agent uses a ReAct loop with access to a current working directory (cwd)
-that persists across conversation turns.
-
-Aligned to use SubAgentState for compatibility with the supervisor.
+Simple ReAct agent — no verify sub-loop (searches are non-destructive).
+  LLM → tool calls → LLM → … → final text response
 """
 
 from __future__ import annotations
@@ -16,12 +14,12 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 
-from src.agents.fileagent.agent_tools import file_agent_tools
-from src.agents.fileagent.system_prompt import FILE_AGENT_SYSTEM_PROMPT
+from src.agents.searchagent.agent_tools import search_agent_tools
+from src.agents.searchagent.system_prompt import SEARCH_AGENT_SYSTEM_PROMPT
 from src.states.agent_state import SubAgentState
 from src.config.logger import get_logger
 
-logger = get_logger("agents.file_agent")
+logger = get_logger("agents.search_agent")
 
 MAX_ITERATIONS = 10
 
@@ -31,7 +29,7 @@ def _get_llm():
     return ChatGoogleGenerativeAI(
         model="gemini-2.0-flash",
         temperature=0,
-    ).bind_tools(file_agent_tools)
+    ).bind_tools(search_agent_tools)
 
 
 # ── Graph nodes ──────────────────────────────────────────────────────
@@ -42,13 +40,8 @@ def agent_node(state: SubAgentState) -> dict:
     messages = list(state["messages"])
     if not any(isinstance(m, SystemMessage) for m in messages):
         task_desc = state.get("task", {}).get("description", "")
-        cwd = state.get("cwd", ".")
         sys_msg = SystemMessage(
-            content=(
-                FILE_AGENT_SYSTEM_PROMPT
-                + f"\n\nCurrent task: {task_desc}"
-                + f"\nCurrent working directory: {cwd}"
-            )
+            content=SEARCH_AGENT_SYSTEM_PROMPT + f"\n\nCurrent task: {task_desc}"
         )
         messages = [sys_msg] + messages
 
@@ -60,7 +53,7 @@ def agent_node(state: SubAgentState) -> dict:
 
 
 def should_continue(state: SubAgentState) -> str:
-    """Decide next step: continue with tools or finish."""
+    """Decide: continue with tools or finish."""
     if state.get("iterations", 0) >= MAX_ITERATIONS:
         return "finish"
     last = state["messages"][-1]
@@ -78,11 +71,11 @@ def finish_node(state: SubAgentState) -> dict:
 
 # ── Build graph ──────────────────────────────────────────────────────
 
-def build_file_agent_graph():
+def build_search_agent_graph():
     graph = StateGraph(SubAgentState)
 
     graph.add_node("agent", agent_node)
-    graph.add_node("tools", ToolNode(file_agent_tools))
+    graph.add_node("tools", ToolNode(search_agent_tools))
     graph.add_node("finish", finish_node)
 
     graph.add_edge(START, "agent")
@@ -96,5 +89,4 @@ def build_file_agent_graph():
     return graph.compile()
 
 
-# Pre-built graph instance for convenience
-file_agent_graph = build_file_agent_graph()
+search_agent_graph = build_search_agent_graph()
