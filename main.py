@@ -7,6 +7,8 @@ Run:
 from dotenv import load_dotenv
 load_dotenv()
 
+import uuid
+
 from langchain_core.messages import HumanMessage
 
 from src.config.settings import DEFAULT_CWD
@@ -55,6 +57,13 @@ def main():
     # Persistent state across turns
     cwd = DEFAULT_CWD
 
+    # Generate a unique thread ID for this CLI session
+    # This enables InMemorySaver to accumulate messages across turns
+    thread_id = str(uuid.uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
+
+    logger.info("Session started — thread_id: %s", thread_id)
+
     while True:
         try:
             prompt = f"{Colors.GRAY}[{cwd}]{Colors.RESET} {Colors.GREEN}{Colors.BOLD}You ▸{Colors.RESET} "
@@ -84,7 +93,8 @@ def main():
                 "cwd": cwd,
                 "iteration": 0,
                 "next_agent": "",
-            }
+            },
+            config=config,
         )
 
         # Update cwd from agent's response (it may have changed)

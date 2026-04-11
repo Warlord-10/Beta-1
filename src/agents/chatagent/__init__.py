@@ -1,5 +1,5 @@
-"""Chat Agent — universal response layer for all user-facing output."""
+"""Chat Agent — primary user interface with tool-calling and delegation."""
 
-from src.agents.chatagent.chat_agent import simple_response_node, complex_response_node
+from src.agents.chatagent.chat_agent import chat_agent_node, format_response_node
 
-__all__ = ["simple_response_node", "complex_response_node"]
+__all__ = ["chat_agent_node", "format_response_node"]

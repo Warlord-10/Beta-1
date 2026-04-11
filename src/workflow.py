@@ -1,67 +1,40 @@
 """Main orchestrator graph for Beta-1 personal assistant.
 
 Architecture:
-  User → input_node (classify)
-       → simple:  chat_response → END
-       → complex: planning_graph → supervisor_graph → chat_response → END
+  User → chat_agent (tool-calling, handles simple + uses tools)
+       → [simple/tool-handled] → END
+       → [complex] → planning → supervisor → format_response → END
 
-The planning and supervisor are self-contained sub-graphs invoked as
-black boxes. Changing their internal flow doesn't affect this workflow.
+The chat agent is the primary entry point. It handles:
+  - Direct answers (greetings, general knowledge)
+  - Tool-assisted answers (reading files, listing dirs, git status, etc.)
+  - Delegation to the planning agent for complex tasks
+
+Persistence:
+  Uses InMemorySaver checkpointer so messages accumulate across turns
+  within the same thread (CLI session).
 """
 
 from __future__ import annotations
 
-from typing import Optional, Literal
-
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
-from pydantic import BaseModel, Field
+from langgraph.checkpoint.memory import InMemorySaver
 
-from src.llms import llm_factory, cost_tracker
+from src.llms import cost_tracker
 from src.states.main_state import MainState
-from src.prompts import load_prompt
 from src.config.logger import get_logger
 
 logger = get_logger("workflow")
 
 
-# ── Input classifier ────────────────────────────────────────────────
+# ── Chat agent nodes ────────────────────────────────────────────────
 
-class InputClassification(BaseModel):
-    """LLM output schema for query classification."""
-    complexity: Literal["simple", "complex"] = Field(
-        description="Whether the query is 'simple' (direct answer) or 'complex' (needs agents)."
-    )
-    response: Optional[str] = Field(
-        default=None,
-        description="Direct response for simple queries. None for complex."
-    )
-
-
-def input_node(state: MainState) -> dict:
-    """Classify the user query as simple or complex."""
-    llm = llm_factory.create("GEMINI_FLASH", temperature=0.7, max_output_tokens=1024)
-    structured_llm = llm.with_structured_output(InputClassification)
-
-    system_prompt = load_prompt("input_classifier")
-
-    messages = [
-        SystemMessage(content=system_prompt),
-        *state["messages"],
-    ]
-
-    result: InputClassification = structured_llm.invoke(messages)
-
-    complexity = result.complexity
-    response = result.response or ""
-
-    logger.info("Classified as %s", complexity)
-
-    return {
-        "complexity": complexity,
-        "final_response": response,
-        "user_query": state["messages"][-1].content if state["messages"] else "",
-    }
+def chat_agent(state: MainState) -> dict:
+    """Primary entry — tool-calling chat agent."""
+    from src.agents.chatagent import chat_agent_node
+    result = chat_agent_node(state)
+    logger.info("\n%s", cost_tracker.get_summary())
+    return result
 
 
 # ── Wrapper nodes for sub-graphs ────────────────────────────────────
@@ -97,31 +70,21 @@ def supervisor_node(state: MainState) -> dict:
     }
 
 
-# ── Chat response nodes ─────────────────────────────────────────────
-
-def simple_response_node(state: MainState) -> dict:
-    """Simple query — response already in state from input_node."""
-    from src.agents.chatagent import simple_response_node as _simple
-    result = _simple(state)
-    logger.info("\n%s", cost_tracker.get_summary())
-    return result
-
-
-def complex_response_node(state: MainState) -> dict:
-    """Complex query — chat agent formats the final response."""
-    from src.agents.chatagent import complex_response_node as _complex
-    result = _complex(state)
+def format_response(state: MainState) -> dict:
+    """Format complex task results into user-facing response."""
+    from src.agents.chatagent import format_response_node
+    result = format_response_node(state)
     logger.info("\n%s", cost_tracker.get_summary())
     return result
 
 
 # ── Routing ──────────────────────────────────────────────────────────
 
-def route_after_classify(state: MainState) -> str:
-    """Route based on complexity classification."""
+def route_after_chat_agent(state: MainState) -> str:
+    """Route based on complexity — set by the chat agent."""
     if state.get("complexity") == "complex":
         return "planning"
-    return "simple_response"
+    return "__end__"
 
 
 # ── Build main graph ─────────────────────────────────────────────────
@@ -130,26 +93,26 @@ def build_main_graph():
     graph = StateGraph(MainState)
 
     # Nodes
-    graph.add_node("input_node", input_node)
+    graph.add_node("chat_agent", chat_agent)
     graph.add_node("planning", planning_node)
     graph.add_node("supervisor", supervisor_node)
-    graph.add_node("simple_response", simple_response_node)
-    graph.add_node("complex_response", complex_response_node)
+    graph.add_node("format_response", format_response)
 
     # Edges
-    graph.add_edge(START, "input_node")
+    graph.add_edge(START, "chat_agent")
 
-    graph.add_conditional_edges("input_node", route_after_classify, {
+    graph.add_conditional_edges("chat_agent", route_after_chat_agent, {
         "planning": "planning",
-        "simple_response": "simple_response",
+        "__end__": END,
     })
 
     graph.add_edge("planning", "supervisor")
-    graph.add_edge("supervisor", "complex_response")
-    graph.add_edge("simple_response", END)
-    graph.add_edge("complex_response", END)
+    graph.add_edge("supervisor", "format_response")
+    graph.add_edge("format_response", END)
 
-    return graph.compile()
+    # Compile with InMemorySaver for conversation persistence
+    checkpointer = InMemorySaver()
+    return graph.compile(checkpointer=checkpointer)
 
 
 # Compiled graph — import this from anywhere
