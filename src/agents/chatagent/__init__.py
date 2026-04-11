@@ -1,3 +1,5 @@
-from src.agents.chatagent.chat_agent import chat_agent_graph, ChatAgentState
+"""Chat Agent — universal response layer for all user-facing output."""
 
-__all__ = ["chat_agent_graph", "ChatAgentState"]
+from src.agents.chatagent.chat_agent import simple_response_node, complex_response_node
+
+__all__ = ["simple_response_node", "complex_response_node"]

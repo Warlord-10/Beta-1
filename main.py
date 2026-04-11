@@ -15,27 +15,58 @@ from src.workflow import main_graph
 
 logger = get_logger("cli")
 
+class Colors:
+    RESET      = "\033[0m"
+    BOLD       = "\033[1m"
+    DIM        = "\033[2m"
+
+    GREEN      = "\033[38;5;114m"     # soft green for user
+    BLUE       = "\033[38;5;111m"     # soft blue for bot
+    CYAN       = "\033[38;5;80m"      # accent color
+    GRAY       = "\033[38;5;245m"     # muted gray
+    WHITE      = "\033[38;5;255m"     # bright white
+    YELLOW     = "\033[38;5;222m"     # warm yellow
+
+
+def print_banner():
+    """Print a styled ASCII art banner on startup."""
+    banner = f"""
+{Colors.CYAN}{Colors.BOLD}
+╔════════════════════════════════════════════════╗
+║                                                ║
+║   ██████  ███████ ████████  █████     ████     ║
+║   ██   ██ ██         ██    ██   ██      ██     ║
+║   ██████  █████      ██    ███████  ██  ██     ║
+║   ██   ██ ██         ██    ██   ██      ██     ║
+║   ██████  ███████    ██    ██   ██    ██████   ║
+║                                                ║
+╚════════════════════════════════════════════════╝
+{Colors.RESET}
+{Colors.DIM}Personal AI Assistant • by Deepanshu Joshi{Colors.RESET}
+{Colors.GRAY}Type your request below  •  'quit' to exit{Colors.RESET}
+"""
+    print(banner)
+
 
 def main():
     """Interactive loop — chat with Beta-1 in the terminal."""
-    print("🤖 Beta-1 Personal Assistant")
-    print("=" * 40)
-    print("Type your request (or 'quit' to exit)\n")
+    print_banner()
 
     # Persistent state across turns
     cwd = DEFAULT_CWD
 
     while True:
         try:
-            user_input = input(f"[{cwd}] You: ").strip()
+            prompt = f"{Colors.GRAY}[{cwd}]{Colors.RESET} {Colors.GREEN}{Colors.BOLD}You ▸{Colors.RESET} "
+            user_input = input(prompt).strip()
         except (KeyboardInterrupt, EOFError):
-            print("\n👋 Goodbye!")
+            print(f"\n{Colors.YELLOW}👋 Goodbye!{Colors.RESET}")
             break
 
         if not user_input:
             continue
         if user_input.lower() in ("quit", "exit", "q"):
-            print("👋 Goodbye!")
+            print(f"{Colors.YELLOW}👋 Goodbye!{Colors.RESET}")
             break
 
         logger.info("User input: %s", user_input)
@@ -45,10 +76,14 @@ def main():
                 "messages": [HumanMessage(content=user_input)],
                 "user_query": user_input,
                 "complexity": "",
-                "plan": [],
-                "results": [],
+                "implementation_plan": "",
+                "action_checklist": [],
+                "current_task": {},
+                "completed_tasks": [],
                 "final_response": "",
                 "cwd": cwd,
+                "iteration": 0,
+                "next_agent": "",
             }
         )
 
@@ -62,7 +97,7 @@ def main():
             final_response = result["messages"][-1].content if result.get("messages") else "No response."
 
         logger.info("AI response: %s", final_response[:200])
-        print(f"\nBeta-1: {final_response}\n")
+        print(f"\n{Colors.BLUE}{Colors.BOLD}Beta-1 ▸{Colors.RESET} {Colors.BLUE}{final_response}{Colors.RESET}\n")
 
 
 if __name__ == "__main__":

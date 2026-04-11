@@ -1,25 +1,24 @@
-"""Supervisor Agent — decompose, route, validate loop.
+"""Supervisor Agent — executes the plan by dispatching tasks to sub-agents.
 
-This module builds the supervisor sub-graph:
-  supervisor_node → router_node → {agent} → validator_node → supervisor_node (loop)
+Sub-graph flow:
+  supervisor_node → route → coding_wrapper (invokes coding_agent_graph)
+                          → task_done → supervisor_node (loop)
+                          → FINISH → END
 
-The supervisor LLM produces a plan and drives the router via `next_agent`.
-The validator checks each agent's result and emits a verdict.
+The supervisor picks the next pending task, invokes the appropriate
+agent sub-graph as a black box, marks the task complete, and loops.
+No validator/review node — kept simple for the prototype.
 """
 
 from __future__ import annotations
 
-import json
-import operator
-from typing import Annotated
-
-from langchain_core.messages import AnyMessage, AIMessage, HumanMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
+from pydantic import BaseModel, Field
 
-from src.states.supervisor_state import SupervisorState, TaskItem
-from src.states.agent_state import SubAgentState
-from src.agents.supervisoragent.system_prompt import SUPERVISOR_AGENT_SYSTEM_PROMPT
+from src.llms import llm_factory
+from src.states.main_state import MainState
+from src.prompts import load_prompt
 from src.config.logger import get_logger
 
 logger = get_logger("agents.supervisor")
@@ -27,257 +26,204 @@ logger = get_logger("agents.supervisor")
 MAX_SUPERVISOR_ITERATIONS = 15
 
 
-def _get_llm():
-    """Lazy LLM initialization."""
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
-        temperature=0,
-        max_output_tokens=2048,
+# ── Structured output schema ────────────────────────────────────────
+
+class SupervisorRoutingOutput(BaseModel):
+    """LLM output for task routing."""
+    next_agent: str = Field(
+        default="FINISH",
+        description="Which agent to route to (e.g. 'coding_agent'), or 'FINISH' if all done"
     )
-
-
-def _get_agent_graph(agent_name: str):
-    """Lazy import of agent graphs to avoid circular imports."""
-    if agent_name == "file_agent":
-        from src.agents.fileagent import file_agent_graph
-        return file_agent_graph
-    elif agent_name == "code_agent":
-        from src.agents.codeagent import code_agent_graph
-        return code_agent_graph
-    elif agent_name == "system_agent":
-        from src.agents.systemagent import system_agent_graph
-        return system_agent_graph
-    elif agent_name == "search_agent":
-        from src.agents.searchagent import search_agent_graph
-        return search_agent_graph
-    else:
-        raise ValueError(f"Unknown agent: {agent_name}")
-
-
-# ── Helper ───────────────────────────────────────────────────────────
-
-def _parse_json(text: str) -> dict:
-    """Best-effort JSON extraction from LLM output."""
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return {}
+    current_task_id: str = Field(
+        default="",
+        description="The 'id' field of the task to dispatch (e.g. 'step_1')"
+    )
 
 
 # ── Supervisor node ──────────────────────────────────────────────────
 
-def supervisor_node(state: SupervisorState) -> dict:
-    """Decompose the task into a plan or re-plan after validation."""
-    llm = _get_llm()
-    messages = [
-        SystemMessage(content=SUPERVISOR_AGENT_SYSTEM_PROMPT),
-        *state["messages"],
-    ]
+def supervisor_node(state: MainState) -> dict:
+    """Pick the next pending task and route to the appropriate agent."""
+    action_checklist = state.get("action_checklist", [])
+    completed_ids = {t["id"] for t in state.get("completed_tasks", [])}
+    iteration = state.get("iteration", 0) + 1
 
-    # Add context about current progress
-    completed_ids = [t["id"] for t in state.get("completed", [])]
-    pending_ids = [t.get("id", "?") for t in state.get("pending", [])]
-    if completed_ids or pending_ids:
-        progress_msg = HumanMessage(content=(
-            f"Progress update:\n"
-            f"  Completed tasks: {completed_ids}\n"
-            f"  Pending tasks: {pending_ids}\n"
-            f"  Last verdict: {state.get('verdict', 'none')}\n"
-            f"Plan accordingly — assign next_agent or set next_agent to FINISH."
-        ))
-        messages.append(progress_msg)
+    # Find pending tasks
+    pending_tasks = [t for t in action_checklist if t["id"] not in completed_ids]
 
-    result = llm.invoke(messages)
-    parsed = _parse_json(result.content)
+    if not pending_tasks:
+        logger.info("Supervisor: All tasks completed → FINISH")
+        return {
+            "messages": [AIMessage(content="All tasks completed successfully.")],
+            "next_agent": "FINISH",
+            "iteration": iteration,
+        }
 
-    updates: dict = {
-        "messages": [result],
-        "iteration": state.get("iteration", 0) + 1,
+    if iteration > MAX_SUPERVISOR_ITERATIONS:
+        logger.warning("Supervisor: Max iterations (%d) reached → FINISH", MAX_SUPERVISOR_ITERATIONS)
+        return {
+            "messages": [AIMessage(content="Max iterations reached. Finishing with completed work.")],
+            "next_agent": "FINISH",
+            "iteration": iteration,
+        }
+
+    # For single pending task, skip the LLM call entirely
+    if len(pending_tasks) == 1:
+        next_task = pending_tasks[0]
+        agent = next_task.get("assigned_agent", "coding_agent")
+        logger.info("Supervisor: single pending task %s → %s (iteration %d)",
+                     next_task["id"], agent, iteration)
+        return {
+            "messages": [AIMessage(content=f"Supervisor: dispatching task {next_task['id']} to {agent}")],
+            "next_agent": agent,
+            "current_task": next_task,
+            "iteration": iteration,
+        }
+
+    # Multiple pending tasks — use LLM to pick next (respects dependencies)
+    system_prompt = load_prompt("supervisor_agent")
+
+    llm = llm_factory.create("GEMINI_FLASH", temperature=0, max_output_tokens=1024)
+    structured_llm = llm.with_structured_output(SupervisorRoutingOutput)
+
+    # Format pending tasks clearly for the LLM
+    tasks_text = "\n".join(
+        f"  - id: {t['id']}, agent: {t['assigned_agent']}, description: {t['task_description']}"
+        for t in pending_tasks
+    )
+
+    routing_prompt = f"""{system_prompt}
+
+Implementation Plan:
+{state.get('implementation_plan', 'No plan available.')}
+
+Pending Tasks:
+{tasks_text}
+
+Completed Task IDs: {list(completed_ids)}
+
+Pick the next task to execute. You MUST set current_task_id to one of the pending task IDs listed above."""
+
+    result: SupervisorRoutingOutput = structured_llm.invoke(routing_prompt)
+
+    # Find the matched task
+    next_task = None
+    for task in pending_tasks:
+        if task["id"] == result.current_task_id:
+            next_task = task
+            break
+
+    # Fallback: just take the first pending task if LLM returned bad ID
+    if next_task is None:
+        next_task = pending_tasks[0]
+        logger.warning("Supervisor: LLM returned unknown task ID '%s', falling back to '%s'",
+                        result.current_task_id, next_task["id"])
+
+    agent = next_task.get("assigned_agent", result.next_agent)
+
+    logger.info("Supervisor: routing to %s for task %s (iteration %d)",
+                agent, next_task["id"], iteration)
+
+    return {
+        "messages": [AIMessage(content=f"Supervisor: dispatching task {next_task['id']} to {agent}")],
+        "next_agent": agent,
+        "current_task": next_task,
+        "iteration": iteration,
     }
-
-    # First call: build the plan
-    if not state.get("plan"):
-        plan_items = []
-        for item in parsed.get("plan", []):
-            plan_items.append(TaskItem(
-                id=item.get("id", ""),
-                description=item.get("description", ""),
-                assigned_agent=item.get("assigned_agent", ""),
-                context=item.get("context", {}),
-                status="pending",
-                result="",
-            ))
-        updates["plan"] = plan_items
-        updates["pending"] = list(plan_items)
-
-    updates["next_agent"] = parsed.get("next_agent", "FINISH")
-
-    logger.info("Supervisor: next_agent=%s, iteration=%d",
-                updates["next_agent"], updates["iteration"])
-    return updates
 
 
 # ── Agent wrapper nodes ──────────────────────────────────────────────
 
-def _run_sub_agent(agent_name: str, state: SupervisorState) -> dict:
-    """Invoke a sub-agent graph and collect its result."""
-    graph = _get_agent_graph(agent_name)
+def coding_agent_wrapper(state: MainState) -> dict:
+    """Invoke the coding agent sub-graph as a black box."""
+    from src.agents.codeagent import coding_agent_graph
 
-    # Find current task from pending
-    pending = state.get("pending", [])
-    current_task = pending[0] if pending else TaskItem(
-        id="adhoc", description=state.get("task", ""),
-        assigned_agent="", context={}, status="working", result=""
-    )
+    logger.info("Invoking coding agent for task: %s", state.get("current_task", {}).get("id", "?"))
 
-    # Build sub-agent input
-    task_msg = HumanMessage(content=current_task["description"])
-    agent_input = {
-        "messages": [task_msg],
-        "task": current_task,
-        "status": "working",
-        "result": "",
-        "iterations": 0,
-        "cwd": ".",
-    }
+    result = coding_agent_graph.invoke(state)
 
-    try:
-        result = graph.invoke(agent_input)
-        agent_result = result.get("result", "")
-        if not agent_result and result.get("messages"):
-            last_msg = result["messages"][-1]
-            agent_result = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
-    except Exception as e:
-        logger.error("Sub-agent error: %s", e)
-        agent_result = f"Agent error: {e}"
+    # Extract the meaningful messages from the coding agent's work
+    # Keep the last few messages that contain actual results
+    result_messages = []
+    for msg in result.get("messages", []):
+        if isinstance(msg, AIMessage) and msg.content and not getattr(msg, "tool_calls", None):
+            result_messages.append(msg)
+
+    # If no clean AI messages, take the last message
+    if not result_messages:
+        result_messages = result.get("messages", [])[-1:]
 
     return {
-        "messages": [AIMessage(content=f"[{agent_name}] Result for task '{current_task['id']}':\n{agent_result}")],
+        "messages": result_messages,
     }
 
 
-def file_agent_node(state: SupervisorState) -> dict:
-    return _run_sub_agent("file_agent", state)
+def after_agent(state: MainState) -> dict:
+    """After an agent finishes a task, mark it as completed."""
+    current_task = state.get("current_task", {})
 
+    if current_task:
+        # Extract result from the last non-tool AI message
+        result_content = ""
+        for msg in reversed(state.get("messages", [])):
+            if isinstance(msg, AIMessage) and msg.content and not getattr(msg, "tool_calls", None):
+                result_content = msg.content
+                break
 
-def code_agent_node(state: SupervisorState) -> dict:
-    return _run_sub_agent("code_agent", state)
+        completed_task = {
+            **current_task,
+            "status": "done",
+            "result": result_content[:2000],  # Cap result size
+        }
 
+        logger.info("Task %s completed", current_task.get("id", "unknown"))
 
-def system_agent_node(state: SupervisorState) -> dict:
-    return _run_sub_agent("system_agent", state)
+        return {
+            "completed_tasks": [completed_task],
+        }
 
-
-def search_agent_node(state: SupervisorState) -> dict:
-    return _run_sub_agent("search_agent", state)
-
-
-# ── Validator node ───────────────────────────────────────────────────
-
-def validator_node(state: SupervisorState) -> dict:
-    """Check the quality of the last agent's result."""
-    llm = _get_llm()
-    messages = [
-        SystemMessage(content=(
-            "You are a result validator. Check the agent's output for quality.\n"
-            "Respond with JSON: {\"verdict\": \"approved\" or \"needs_revision\" or \"failed\", \"feedback\": \"...\"}\n"
-            "Approve if the result adequately addresses the task. "
-            "Mark needs_revision if the output is partially wrong. "
-            "Mark failed if the output is completely wrong or the agent errored."
-        )),
-        *state["messages"][-3:],  # last few messages for context
-    ]
-
-    result = llm.invoke(messages)
-    parsed = _parse_json(result.content)
-
-    verdict = parsed.get("verdict", "approved")
-    feedback = parsed.get("feedback", "")
-
-    logger.info("Validator verdict: %s — %s", verdict, feedback[:100])
-
-    # Move task from pending to completed if approved
-    pending = list(state.get("pending", []))
-    completed = list(state.get("completed", []))
-
-    if pending and verdict == "approved":
-        done_task = dict(pending.pop(0))
-        done_task["status"] = "done"
-        completed.append(done_task)
-
-    return {
-        "verdict": verdict,
-        "pending": pending,
-        "completed": completed,
-        "messages": [AIMessage(content=f"[Validator] {verdict}: {feedback}")],
-    }
+    return {}
 
 
 # ── Routing logic ────────────────────────────────────────────────────
 
-def route_to_agent(state: SupervisorState) -> str:
-    """Route based on next_agent field."""
+def route_after_supervisor(state: MainState) -> str:
+    """Route: to an agent or FINISH."""
     agent = state.get("next_agent", "FINISH")
-    if agent in ("file_agent", "code_agent", "system_agent", "search_agent"):
-        return agent
+    if agent == "coding_agent":
+        return "coding_agent"
+    # Future: add system_agent, search_agent, etc.
+    if agent == "FINISH":
+        return "FINISH"
+    # Unknown agent — log warning and finish
+    logger.warning("Supervisor: unknown agent '%s', finishing", agent)
     return "FINISH"
 
 
-def after_validation(state: SupervisorState) -> str:
-    """After validation, decide whether to loop or finish."""
-    if state.get("iteration", 0) >= MAX_SUPERVISOR_ITERATIONS:
-        return "FINISH"
-    verdict = state.get("verdict", "approved")
-    pending = state.get("pending", [])
-
-    if verdict == "needs_revision":
-        return "supervisor"  # re-plan
-    if verdict == "failed":
-        return "supervisor"  # re-plan with failure context
-    if not pending:
-        return "FINISH"      # all done
-    return "supervisor"      # next task
-
-
-# ── Build graph ──────────────────────────────────────────────────────
+# ── Build sub-graph ──────────────────────────────────────────────────
 
 def build_supervisor_graph():
-    graph = StateGraph(SupervisorState)
+    graph = StateGraph(MainState)
 
     # Nodes
     graph.add_node("supervisor", supervisor_node)
-    graph.add_node("file_agent", file_agent_node)
-    graph.add_node("code_agent", code_agent_node)
-    graph.add_node("system_agent", system_agent_node)
-    graph.add_node("search_agent", search_agent_node)
-    graph.add_node("validator", validator_node)
+    graph.add_node("coding_agent", coding_agent_wrapper)
+    graph.add_node("task_done", after_agent)
 
     # Entry
     graph.add_edge(START, "supervisor")
 
-    # Supervisor → Router → Agent
-    graph.add_conditional_edges("supervisor", route_to_agent, {
-        "file_agent": "file_agent",
-        "code_agent": "code_agent",
-        "system_agent": "system_agent",
-        "search_agent": "search_agent",
+    # Supervisor → route to agent or FINISH
+    graph.add_conditional_edges("supervisor", route_after_supervisor, {
+        "coding_agent": "coding_agent",
         "FINISH": END,
     })
 
-    # Each agent → Validator
-    graph.add_edge("file_agent", "validator")
-    graph.add_edge("code_agent", "validator")
-    graph.add_edge("system_agent", "validator")
-    graph.add_edge("search_agent", "validator")
+    # Agent → mark task done
+    graph.add_edge("coding_agent", "task_done")
 
-    # Validator → Supervisor (loop) or FINISH
-    graph.add_conditional_edges("validator", after_validation, {
-        "supervisor": "supervisor",
-        "FINISH": END,
-    })
+    # Task done → back to supervisor for next task
+    graph.add_edge("task_done", "supervisor")
 
     return graph.compile()
 

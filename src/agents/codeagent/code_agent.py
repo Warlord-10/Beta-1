@@ -1,108 +1,104 @@
-"""LangGraph sub-graph for the Code Agent.
+"""Coding Agent — self-contained ReAct sub-graph.
 
-This agent uses a ReAct loop with a verify step:
-  LLM → tool calls → verify output → re-try if wrong
+Sub-graph flow:
+  START → coding_node → route → tools → coding_node (loop)
+                              → END (no more tool calls)
 
-It has its own sub-graph so the verify loop is self-contained.
+The supervisor invokes this as a black box via coding_agent_graph.invoke(state).
+The coding agent reads `current_task` from MainState and works on it.
 """
 
 from __future__ import annotations
 
-import operator
-from typing import Annotated
-
-from langchain_core.messages import AnyMessage, AIMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 
-from src.agents.codeagent.agent_tools import code_agent_tools
-from src.agents.codeagent.system_prompt import CODE_AGENT_SYSTEM_PROMPT
-from src.states.agent_state import SubAgentState
+from src.llms import llm_factory
+from src.states.main_state import MainState
+from src.agents.codeagent.agent_tools import code_tools, file_tools
+from src.prompts import load_prompt
 from src.config.logger import get_logger
 
 logger = get_logger("agents.code_agent")
 
-MAX_ITERATIONS = 10
+MAX_CODING_ITERATIONS = 10
+
+# Flat list of all tools available to the coding agent
+all_coding_tools = [*code_tools, *file_tools]
 
 
-def _get_llm():
-    """Lazy LLM initialization."""
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
-        temperature=0,
-    ).bind_tools(code_agent_tools)
+# ── Graph node ───────────────────────────────────────────────────────
 
+def coding_node(state: MainState) -> dict:
+    """ReAct-style coding node — reasons about the task and calls tools."""
+    current_task = state.get("current_task", {})
+    task_desc = current_task.get("task_description", "No task provided.")
+    input_context = current_task.get("input_context", "")
 
-# ── Graph nodes ──────────────────────────────────────────────────────
+    system_prompt = load_prompt("coding_agent")
 
-def agent_node(state: SubAgentState) -> dict:
-    """Invoke the LLM with the current message history."""
-    llm = _get_llm()
-    messages = list(state["messages"])
-    if not any(isinstance(m, SystemMessage) for m in messages):
-        task_desc = state.get("task", {}).get("description", "")
-        sys_msg = SystemMessage(
-            content=CODE_AGENT_SYSTEM_PROMPT + f"\n\nCurrent task: {task_desc}"
-        )
-        messages = [sys_msg] + messages
+    llm = llm_factory.create("GEMINI_FLASH", temperature=0.7, max_output_tokens=1024 * 4)
+    llm_with_tools = llm.bind_tools(all_coding_tools)
 
-    response = llm.invoke(messages)
+    messages = [
+        SystemMessage(content=system_prompt),
+        *state.get("messages", []),
+    ]
+
+    # On first call for this task, inject the task as a human message
+    has_task_msg = any(
+        isinstance(m, HumanMessage) and task_desc in m.content
+        for m in state.get("messages", [])
+    )
+    if not has_task_msg:
+        task_prompt = f"Task: {task_desc}"
+        if input_context:
+            task_prompt += f"\n\nContext: {input_context}"
+        messages.append(HumanMessage(content=task_prompt))
+
+    result = llm_with_tools.invoke(messages)
+
+    logger.info("Coding agent response: %s", result.content[:200] if result.content else "[tool calls]")
+
     return {
-        "messages": [response],
-        "iterations": state.get("iterations", 0) + 1,
+        "messages": [result],
     }
 
 
-def verify_node(state: SubAgentState) -> dict:
-    """Check whether the agent's last action looks correct."""
-    last = state["messages"][-1]
-    if isinstance(last, AIMessage) and not last.tool_calls:
-        return {"status": "done", "result": last.content}
-    return {"status": "working"}
+# ── Routing ──────────────────────────────────────────────────────────
 
+def should_continue(state: MainState) -> str:
+    """Route after coding_node: if tool calls pending → tools, else → done."""
+    last_message = state["messages"][-1]
 
-def should_continue(state: SubAgentState) -> str:
-    """Decide next step: continue tools, verify, or stop."""
-    if state.get("iterations", 0) >= MAX_ITERATIONS:
-        return "finish"
-    last = state["messages"][-1]
-    if isinstance(last, AIMessage) and last.tool_calls:
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "tools"
-    return "verify"
+
+    return "done"
 
 
-def after_verify(state: SubAgentState) -> str:
-    """After verification, either finish or loop back."""
-    if state.get("status") == "done":
-        return "finish"
-    if state.get("iterations", 0) >= MAX_ITERATIONS:
-        return "finish"
-    return "agent"
+# ── Build sub-graph ──────────────────────────────────────────────────
 
+def build_coding_agent_graph():
+    graph = StateGraph(MainState)
 
-# ── Build graph ──────────────────────────────────────────────────────
+    graph.add_node("coding_node", coding_node)
+    graph.add_node("tools", ToolNode(all_coding_tools))
 
-def build_code_agent_graph():
-    graph = StateGraph(SubAgentState)
+    # Entry
+    graph.add_edge(START, "coding_node")
 
-    graph.add_node("agent", agent_node)
-    graph.add_node("tools", ToolNode(code_agent_tools))
-    graph.add_node("verify", verify_node)
-
-    graph.add_edge(START, "agent")
-    graph.add_conditional_edges("agent", should_continue, {
+    # Coding node → tools (ReAct loop) or END
+    graph.add_conditional_edges("coding_node", should_continue, {
         "tools": "tools",
-        "verify": "verify",
-        "finish": END,
+        "done": END,
     })
-    graph.add_edge("tools", "agent")
-    graph.add_conditional_edges("verify", after_verify, {
-        "finish": END,
-        "agent": "agent",
-    })
+
+    # Tools → back to coding node
+    graph.add_edge("tools", "coding_node")
 
     return graph.compile()
 
 
-code_agent_graph = build_code_agent_graph()
+coding_agent_graph = build_coding_agent_graph()

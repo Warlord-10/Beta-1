@@ -1,3 +1,5 @@
-from src.agents.codeagent.code_agent import code_agent_graph
+"""Code Agent — self-contained sub-graph for coding tasks."""
 
-__all__ = ["code_agent_graph"]
+from src.agents.codeagent.code_agent import coding_agent_graph
+
+__all__ = ["coding_agent_graph"]

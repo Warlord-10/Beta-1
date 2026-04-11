@@ -1,111 +1,110 @@
-"""LangGraph sub-graph for the System Agent.
+"""System Agent — self-contained ReAct sub-graph for shell commands and file operations.
 
-This agent uses a ReAct loop with a safety + verify step:
-  LLM → tool calls → safety check → verify → re-try/rollback
+Sub-graph flow:
+  START → system_node → route → tools → system_node (loop)
+                              → END (no more tool calls)
 
-It has its own sub-graph so the safety loop is self-contained.
+The supervisor invokes this as a black box via system_agent_graph.invoke(state).
+The system agent reads `current_task` from MainState and works on it.
+
+NOTE: This agent is built but NOT yet wired into the supervisor.
+      Add it to supervisor routing when ready.
 """
 
 from __future__ import annotations
 
-import operator
-from typing import Annotated
-
-from langchain_core.messages import AnyMessage, AIMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 
+from src.llms import llm_factory
+from src.states.main_state import MainState
 from src.agents.systemagent.agent_tools import system_agent_tools
-from src.agents.systemagent.system_prompt import SYSTEM_AGENT_SYSTEM_PROMPT
-from src.states.agent_state import SubAgentState
+from src.prompts import load_prompt
 from src.config.logger import get_logger
 
 logger = get_logger("agents.system_agent")
 
-MAX_ITERATIONS = 10
+MAX_SYSTEM_ITERATIONS = 10
+
+# All tools available to the system agent: system tools + file tools
+all_system_tools = [*system_agent_tools]
+
+# Also include file tools for file system operations
+from src.tools.file_tools import file_tools
+all_system_tools.extend(file_tools)
 
 
-def _get_llm():
-    """Lazy LLM initialization."""
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
-        temperature=0,
-    ).bind_tools(system_agent_tools)
+# ── Graph node ───────────────────────────────────────────────────────
 
+def system_node(state: MainState) -> dict:
+    """ReAct-style system node — executes commands and file operations."""
+    current_task = state.get("current_task", {})
+    task_desc = current_task.get("task_description", "No task provided.")
+    input_context = current_task.get("input_context", "")
+    cwd = state.get("cwd", ".")
 
-# ── Graph nodes ──────────────────────────────────────────────────────
+    system_prompt = load_prompt("system_agent")
 
-def agent_node(state: SubAgentState) -> dict:
-    """Invoke the LLM with the current message history."""
-    llm = _get_llm()
-    messages = list(state["messages"])
-    if not any(isinstance(m, SystemMessage) for m in messages):
-        task_desc = state.get("task", {}).get("description", "")
-        cwd = state.get("cwd", ".")
-        sys_msg = SystemMessage(
-            content=(
-                SYSTEM_AGENT_SYSTEM_PROMPT
-                + f"\n\nCurrent task: {task_desc}"
-                + f"\nCurrent working directory: {cwd}"
-            )
-        )
-        messages = [sys_msg] + messages
+    llm = llm_factory.create("GEMINI_FLASH", temperature=0, max_output_tokens=1024 * 4)
+    llm_with_tools = llm.bind_tools(all_system_tools)
 
-    response = llm.invoke(messages)
+    messages = [
+        SystemMessage(content=f"{system_prompt}\n\nCurrent working directory: {cwd}"),
+        *state.get("messages", []),
+    ]
+
+    # On first call for this task, inject the task as a human message
+    has_task_msg = any(
+        isinstance(m, HumanMessage) and task_desc in m.content
+        for m in state.get("messages", [])
+    )
+    if not has_task_msg:
+        task_prompt = f"Task: {task_desc}"
+        if input_context:
+            task_prompt += f"\n\nContext: {input_context}"
+        messages.append(HumanMessage(content=task_prompt))
+
+    result = llm_with_tools.invoke(messages)
+
+    logger.info("System agent response: %s", result.content[:200] if result.content else "[tool calls]")
+
     return {
-        "messages": [response],
-        "iterations": state.get("iterations", 0) + 1,
+        "messages": [result],
     }
 
 
-def safety_verify_node(state: SubAgentState) -> dict:
-    """Safety check + verify the agent's last action."""
-    last = state["messages"][-1]
-    if isinstance(last, AIMessage) and not last.tool_calls:
-        return {"status": "done", "result": last.content}
-    return {"status": "working"}
+# ── Routing ──────────────────────────────────────────────────────────
 
+def should_continue(state: MainState) -> str:
+    """Route after system_node: if tool calls pending → tools, else → done."""
+    last_message = state["messages"][-1]
 
-def should_continue(state: SubAgentState) -> str:
-    """Decide next step: continue tools, verify, or stop."""
-    if state.get("iterations", 0) >= MAX_ITERATIONS:
-        return "finish"
-    last = state["messages"][-1]
-    if isinstance(last, AIMessage) and last.tool_calls:
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "tools"
-    return "safety_verify"
+
+    return "done"
 
 
-def after_safety(state: SubAgentState) -> str:
-    """After safety/verify, either finish or loop back."""
-    if state.get("status") == "done":
-        return "finish"
-    if state.get("iterations", 0) >= MAX_ITERATIONS:
-        return "finish"
-    return "agent"
-
-
-# ── Build graph ──────────────────────────────────────────────────────
+# ── Build sub-graph ──────────────────────────────────────────────────
 
 def build_system_agent_graph():
-    graph = StateGraph(SubAgentState)
+    graph = StateGraph(MainState)
 
-    graph.add_node("agent", agent_node)
-    graph.add_node("tools", ToolNode(system_agent_tools))
-    graph.add_node("safety_verify", safety_verify_node)
+    graph.add_node("system_node", system_node)
+    graph.add_node("tools", ToolNode(all_system_tools))
 
-    graph.add_edge(START, "agent")
-    graph.add_conditional_edges("agent", should_continue, {
+    # Entry
+    graph.add_edge(START, "system_node")
+
+    # System node → tools (ReAct loop) or END
+    graph.add_conditional_edges("system_node", should_continue, {
         "tools": "tools",
-        "safety_verify": "safety_verify",
-        "finish": END,
+        "done": END,
     })
-    graph.add_edge("tools", "agent")
-    graph.add_conditional_edges("safety_verify", after_safety, {
-        "finish": END,
-        "agent": "agent",
-    })
+
+    # Tools → back to system node
+    graph.add_edge("tools", "system_node")
 
     return graph.compile()
 

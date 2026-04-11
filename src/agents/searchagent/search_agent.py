@@ -10,7 +10,7 @@ import operator
 from typing import Annotated
 
 from langchain_core.messages import AnyMessage, AIMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from src.llms import llm_factory
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 
@@ -25,11 +25,8 @@ MAX_ITERATIONS = 10
 
 
 def _get_llm():
-    """Lazy LLM initialization."""
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
-        temperature=0,
-    ).bind_tools(search_agent_tools)
+    """Lazy LLM initialization via central factory."""
+    return llm_factory.create("GEMINI_FLASH", temperature=0).bind_tools(search_agent_tools)
 
 
 # ── Graph nodes ──────────────────────────────────────────────────────

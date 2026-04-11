@@ -1,150 +1,127 @@
 """Main orchestrator graph for Beta-1 personal assistant.
 
 Architecture:
-  User → chat_agent (classify)
-       → simple:  direct response → END
-       → complex: supervisor_subgraph → chat_agent (format) → END
+  User → input_node (classify)
+       → simple:  chat_response → END
+       → complex: planning_graph → supervisor_graph → chat_response → END
 
-The supervisor subgraph internally runs:
-  supervisor → router → {file|code|system|search}_agent → validator → supervisor (loop)
+The planning and supervisor are self-contained sub-graphs invoked as
+black boxes. Changing their internal flow doesn't affect this workflow.
 """
 
 from __future__ import annotations
 
-import json
-import operator
-from typing import Annotated, TypedDict
+from typing import Optional, Literal
 
-from langchain_core.messages import AnyMessage, HumanMessage, AIMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
+from pydantic import BaseModel, Field
 
+from src.llms import llm_factory, cost_tracker
 from src.states.main_state import MainState
-from src.agents.chatagent.system_prompt import CHAT_AGENT_SYSTEM_PROMPT
-from src.config.settings import DEFAULT_CWD
+from src.prompts import load_prompt
 from src.config.logger import get_logger
 
 logger = get_logger("workflow")
 
 
-def _get_llm():
-    """Lazy LLM initialization."""
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
-        temperature=0,
-        max_output_tokens=1024,
+# ── Input classifier ────────────────────────────────────────────────
+
+class InputClassification(BaseModel):
+    """LLM output schema for query classification."""
+    complexity: Literal["simple", "complex"] = Field(
+        description="Whether the query is 'simple' (direct answer) or 'complex' (needs agents)."
+    )
+    response: Optional[str] = Field(
+        default=None,
+        description="Direct response for simple queries. None for complex."
     )
 
 
-# ── Node wrappers ────────────────────────────────────────────────────
+def input_node(state: MainState) -> dict:
+    """Classify the user query as simple or complex."""
+    llm = llm_factory.create("GEMINI_FLASH", temperature=0.7, max_output_tokens=1024)
+    structured_llm = llm.with_structured_output(InputClassification)
 
-def chat_classify_node(state: MainState) -> dict:
-    """Run the chat agent's classify step."""
-    llm = _get_llm()
+    system_prompt = load_prompt("input_classifier")
 
     messages = [
-        SystemMessage(content=CHAT_AGENT_SYSTEM_PROMPT),
+        SystemMessage(content=system_prompt),
         *state["messages"],
     ]
 
-    result = llm.invoke(messages)
-    raw = result.content.strip()
+    result: InputClassification = structured_llm.invoke(messages)
 
-    # Parse JSON
-    try:
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-        parsed = json.loads(raw)
-    except (json.JSONDecodeError, IndexError):
-        parsed = {"complexity": "simple", "response": raw, "task_summary": ""}
-
-    complexity = parsed.get("complexity", "simple")
-    response = parsed.get("response", "")
-    task_summary = parsed.get("task_summary", "")
+    complexity = result.complexity
+    response = result.response or ""
 
     logger.info("Classified as %s", complexity)
 
-    updates = {
+    return {
         "complexity": complexity,
+        "final_response": response,
         "user_query": state["messages"][-1].content if state["messages"] else "",
     }
 
-    if complexity == "simple":
-        updates["final_response"] = response
-        updates["messages"] = [AIMessage(content=response)]
-    else:
-        updates["final_response"] = ""
-        updates["messages"] = [AIMessage(content=f"[Chat Agent] Task classified as complex: {task_summary}")]
 
-    return updates
+# ── Wrapper nodes for sub-graphs ────────────────────────────────────
+
+def planning_node(state: MainState) -> dict:
+    """Invoke the planning sub-graph (black box)."""
+    from src.agents.planningagent import planning_agent_graph
+
+    result = planning_agent_graph.invoke(state)
+
+    logger.info("Planning complete: %d steps in action checklist",
+                len(result.get("action_checklist", [])))
+
+    return {
+        "messages": result.get("messages", [])[-1:],  # Keep only the summary message
+        "implementation_plan": result.get("implementation_plan", ""),
+        "action_checklist": result.get("action_checklist", []),
+    }
 
 
 def supervisor_node(state: MainState) -> dict:
-    """Invoke the supervisor sub-graph for complex tasks."""
+    """Invoke the supervisor sub-graph (black box)."""
     from src.agents.supervisoragent import supervisor_agent_graph
 
-    user_query = state.get("user_query", "")
+    result = supervisor_agent_graph.invoke(state)
 
-    # Build supervisor input
-    supervisor_input = {
-        "messages": [HumanMessage(content=user_query)],
-        "task": user_query,
-        "plan": [],
-        "pending": [],
-        "completed": [],
-        "next_agent": "",
-        "verdict": "",
-        "iteration": 0,
-    }
-
-    result = supervisor_agent_graph.invoke(supervisor_input)
-
-    # Collect all agent results from the supervisor's messages
-    agent_results = []
-    for msg in result.get("messages", []):
-        if isinstance(msg, AIMessage) and msg.content:
-            agent_results.append(msg.content)
-
-    combined = "\n\n".join(agent_results)
+    completed = result.get("completed_tasks", [])
+    logger.info("Supervisor complete: %d tasks done", len(completed))
 
     return {
-        "messages": [AIMessage(content=combined)],
-        "results": result.get("completed", []),
+        "completed_tasks": completed,
+        "iteration": result.get("iteration", 0),
     }
 
 
-def format_final_response(state: MainState) -> dict:
-    """Format the final response after supervisor completes."""
-    llm = _get_llm()
+# ── Chat response nodes ─────────────────────────────────────────────
 
-    messages = [
-        SystemMessage(content=(
-            "You are Beta-1. Your team of agents has completed the task. "
-            "Below are their results. Provide a clear, well-formatted final response to the user.\n"
-            "Be concise but thorough. DO NOT mention internal agent names or technical details about the system."
-        )),
-        *state["messages"],
-    ]
-
-    result = llm.invoke(messages)
-    return {
-        "final_response": result.content,
-        "messages": [result],
-    }
+def simple_response_node(state: MainState) -> dict:
+    """Simple query — response already in state from input_node."""
+    from src.agents.chatagent import simple_response_node as _simple
+    result = _simple(state)
+    logger.info("\n%s", cost_tracker.get_summary())
+    return result
 
 
-def response_node(state: MainState) -> dict:
-    """Final node — packages the response."""
-    return {"final_response": state.get("final_response", "")}
+def complex_response_node(state: MainState) -> dict:
+    """Complex query — chat agent formats the final response."""
+    from src.agents.chatagent import complex_response_node as _complex
+    result = _complex(state)
+    logger.info("\n%s", cost_tracker.get_summary())
+    return result
 
 
-# ── Routing logic ────────────────────────────────────────────────────
+# ── Routing ──────────────────────────────────────────────────────────
 
 def route_after_classify(state: MainState) -> str:
     """Route based on complexity classification."""
     if state.get("complexity") == "complex":
-        return "supervisor"
-    return "response"
+        return "planning"
+    return "simple_response"
 
 
 # ── Build main graph ─────────────────────────────────────────────────
@@ -153,22 +130,24 @@ def build_main_graph():
     graph = StateGraph(MainState)
 
     # Nodes
-    graph.add_node("chat_classify", chat_classify_node)
+    graph.add_node("input_node", input_node)
+    graph.add_node("planning", planning_node)
     graph.add_node("supervisor", supervisor_node)
-    graph.add_node("format_response", format_final_response)
-    graph.add_node("response", response_node)
+    graph.add_node("simple_response", simple_response_node)
+    graph.add_node("complex_response", complex_response_node)
 
     # Edges
-    graph.add_edge(START, "chat_classify")
+    graph.add_edge(START, "input_node")
 
-    graph.add_conditional_edges("chat_classify", route_after_classify, {
-        "supervisor": "supervisor",
-        "response": "response",
+    graph.add_conditional_edges("input_node", route_after_classify, {
+        "planning": "planning",
+        "simple_response": "simple_response",
     })
 
-    graph.add_edge("supervisor", "format_response")
-    graph.add_edge("format_response", "response")
-    graph.add_edge("response", END)
+    graph.add_edge("planning", "supervisor")
+    graph.add_edge("supervisor", "complex_response")
+    graph.add_edge("simple_response", END)
+    graph.add_edge("complex_response", END)
 
     return graph.compile()
 
