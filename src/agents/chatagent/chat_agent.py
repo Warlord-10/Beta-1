@@ -35,6 +35,15 @@ from src.tools.file_tools import (
 # Safe system tools
 from src.tools.system_tools.safe_bash import safe_bash
 
+# Scheduler tools
+from src.tools.scheduler_tools import (
+    create_scheduled_task,
+    modify_scheduled_task,
+    toggle_scheduled_task,
+    delete_scheduled_task,
+    list_scheduled_tasks,
+)
+
 logger = get_logger("agents.chat_agent")
 
 
@@ -66,8 +75,14 @@ CHAT_AGENT_TOOLS = [
     search_files,
     search_content,
     safe_bash,
+    create_scheduled_task,
+    modify_scheduled_task,
+    toggle_scheduled_task,
+    delete_scheduled_task,
+    list_scheduled_tasks,
     delegate_to_planner,
 ]
+
 
 
 # ── Node functions ───────────────────────────────────────────────────

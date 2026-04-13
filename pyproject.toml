@@ -9,4 +9,11 @@ dependencies = [
     "google-genai>=1.63.0",
     "langchain-google-genai>=4.2.0",
     "langgraph>=1.0.8",
+    "apscheduler>=3.10",
+    "supertonic>=1.0.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.26.0",
+    "kokoro>=0.9.4",
+    "soundfile",
+    "kittentts @ https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl",
 ]

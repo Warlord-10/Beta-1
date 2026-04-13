@@ -11,9 +11,10 @@ import uuid
 
 from langchain_core.messages import HumanMessage
 
-from src.config.settings import DEFAULT_CWD
+from src.config import settings
 from src.config.logger import get_logger
 from src.workflow import main_graph
+from src.scheduler import scheduler_manager
 
 logger = get_logger("cli")
 
@@ -55,7 +56,7 @@ def main():
     print_banner()
 
     # Persistent state across turns
-    cwd = DEFAULT_CWD
+    cwd = settings.DEFAULT_CWD
 
     # Generate a unique thread ID for this CLI session
     # This enables InMemorySaver to accumulate messages across turns
@@ -63,6 +64,9 @@ def main():
     config = {"configurable": {"thread_id": thread_id}}
 
     logger.info("Session started — thread_id: %s", thread_id)
+    
+    # Scheduler was started recursively when importing scheduler_manager
+    logger.info("Scheduler integrated into main loop.")
 
     while True:
         try:
@@ -109,6 +113,33 @@ def main():
         logger.info("AI response: %s", final_response[:200])
         print(f"\n{Colors.BLUE}{Colors.BOLD}Beta-1 ▸{Colors.RESET} {Colors.BLUE}{final_response}{Colors.RESET}\n")
 
+        # Play TTS if available
+        if tts_engine:
+            # We don't block by default so user can start typing the next prompt
+            # but sounddevice.play runs as async automatically unless we call sd.wait()
+            try:
+                tts_engine.play(final_response, block=False)
+            except Exception as e:
+                logger.error("TTS playback failed: %s", e)
+
+    
+    # Shutdown gracefully
+    scheduler_manager.shutdown()
 
 if __name__ == "__main__":
+    # Lazy initialization of TTS if user installed the dependencies
+    try:
+        from src.voice import get_tts_engine
+        
+        provider_name = settings.TTS_PROVIDER
+        provider_config = settings.TTS_CONFIG.get(provider_name, {})
+        
+        print(f"{Colors.DIM}Loading {provider_name.capitalize()} TTS framework...{Colors.RESET}")
+        tts_engine = get_tts_engine(provider_name, provider_config)
+    except Exception as e:
+        logger.warning("TTS Engine failed to initialize: %s", e)
+        tts_engine = None
+        
     main()
+
+

@@ -13,3 +13,5 @@ wheels/
 temp.py
 .env
 /logs
+/data
+/updates
