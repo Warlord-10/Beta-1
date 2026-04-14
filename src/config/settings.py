@@ -5,6 +5,9 @@ All tuneable knobs live here so you never have to hunt through code.
 
 import os
 from datetime import datetime, timedelta, date
+from dataclasses import dataclass
+import json
+from pathlib import Path
 
 # Where agent & tool logs are written.
 #   "terminal"  → print to stdout/stderr only
@@ -45,4 +48,12 @@ TTS_CONFIG = {
     }
 }
 
+@dataclass
+class Settings:
+    LOG_MODE: str
+    LOG_FILE_PATH: str
+    DEFAULT_CWD: str
+    TTS_PROVIDER: str
+    TTS_CONFIG: dict
 
+settings = Settings(LOG_MODE, LOG_FILE_PATH, DEFAULT_CWD, TTS_PROVIDER, TTS_CONFIG)     

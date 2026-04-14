@@ -48,3 +48,4 @@ class MainState(TypedDict):
     cwd: str
     iteration: int                               # supervisor loop counter
     next_agent: str                              # supervisor routing
+    extra_context: Annotated[list[dict], operator.add]  # extra context for the agents

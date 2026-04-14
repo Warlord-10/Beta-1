@@ -11,10 +11,11 @@ import uuid
 
 from langchain_core.messages import HumanMessage
 
-from src.config import settings
+from src.config.settings import settings
 from src.config.logger import get_logger
 from src.workflow import main_graph
 from src.scheduler import scheduler_manager
+from pprint import pprint
 
 logger = get_logger("cli")
 
@@ -81,6 +82,10 @@ def main():
         if user_input.lower() in ("quit", "exit", "q"):
             print(f"{Colors.YELLOW}👋 Goodbye!{Colors.RESET}")
             break
+        if user_input.lower() == "/settings":
+            print(f"{Colors.GREEN}{Colors.BOLD}Settings:{Colors.RESET}")
+            pprint(settings)
+            continue
 
         logger.info("User input: %s", user_input)
 

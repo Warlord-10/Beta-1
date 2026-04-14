@@ -12,12 +12,16 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
+from langgraph.prebuilt import ToolNode
 from pydantic import BaseModel, Field
 
 from src.llms import llm_factory
 from src.states.main_state import MainState
 from src.prompts import load_prompt
 from src.config.logger import get_logger
+from src.agents.planningagent.agent_tools import read_file, list_directory, search_content, search_files, change_directory
+
+all_planning_tools = [read_file, list_directory, search_content, search_files, change_directory]
 
 logger = get_logger("agents.planning")
 
@@ -48,10 +52,21 @@ class PlanOutput(BaseModel):
 
 # ── Graph node ───────────────────────────────────────────────────────
 
+def should_continue(state: MainState) -> str:
+    """Route after planning_node: if tool calls pending → tools, else → done."""
+    last_message = state["messages"][-1]
+
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "tools"
+
+    return "done"
+      
+
 def planning_node(state: MainState) -> dict:
     """Analyze task and produce a structured plan with action checklist."""
     llm = llm_factory.create("GEMINI_FLASH", temperature=0.7, max_output_tokens=1024 * 8)
-    structured_llm = llm.with_structured_output(PlanOutput)
+    llm_with_tools = llm.bind_tools(all_planning_tools)
+    structured_llm = llm_with_tools.with_structured_output(PlanOutput)
 
     system_prompt = load_prompt("planning_agent")
 
@@ -106,9 +121,14 @@ def build_planning_graph():
     graph = StateGraph(MainState)
 
     graph.add_node("planning_node", planning_node)
+    graph.add_node("tools", ToolNode(all_planning_tools))
 
     graph.add_edge(START, "planning_node")
-    graph.add_edge("planning_node", END)
+    graph.add_conditional_edges("planning_node", should_continue, {
+        "tools": "tools",
+        "done": END,
+    })
+    graph.add_edge("tools", "planning_node")
 
     return graph.compile()
 
