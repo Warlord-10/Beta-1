@@ -25,7 +25,7 @@ LOG_FILE_PATH: str = os.path.join(
 DEFAULT_CWD: str = os.getcwd()
 
 # The active TTS provider. Choose "supertonic", "kokoro", or "kitten"
-TTS_PROVIDER: str = "kitten"
+TTS_PROVIDER: str = None
 
 # Configuration for the Text-to-Speech engines
 TTS_CONFIG = {

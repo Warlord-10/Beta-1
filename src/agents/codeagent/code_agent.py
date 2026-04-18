@@ -38,7 +38,7 @@ def coding_node(state: MainState) -> dict:
 
     system_prompt = load_prompt("coding_agent")
 
-    llm = llm_factory.create("GEMINI_FLASH", temperature=0.7, max_output_tokens=1024 * 4)
+    llm = llm_factory.create("GEMMA_4_31B", temperature=0.7, max_output_tokens=1024 * 4)
     llm_with_tools = llm.bind_tools(all_coding_tools)
 
     messages = [

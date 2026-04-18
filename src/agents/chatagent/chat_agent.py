@@ -14,35 +14,33 @@ Exports:
 
 from __future__ import annotations
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from pprint import pprint
+from typing import Annotated, TypedDict
+
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, AIMessageChunk
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import create_react_agent
 
-from src.llms import llm_factory
-from src.states.main_state import MainState
-from src.prompts import load_prompt
 from src.config.logger import get_logger
+from src.llms import llm_factory
+from src.prompts import load_prompt
+from src.states.main_state import MainState
 
 # Read-only file tools
-from src.tools.file_tools import (
-    read_file,
-    list_directory,
-    get_file_info,
-    search_files,
-    search_content,
-)
+from src.tools.file_tools import (get_file_info, list_directory, read_file,
+                                  search_content, search_files)
+
+# Scheduler tools
+from src.tools.scheduler_tools import (create_scheduled_task,
+                                       delete_scheduled_task,
+                                       list_scheduled_tasks,
+                                       modify_scheduled_task,
+                                       toggle_scheduled_task)
 
 # Safe system tools
 from src.tools.system_tools.safe_bash import safe_bash
-
-# Scheduler tools
-from src.tools.scheduler_tools import (
-    create_scheduled_task,
-    modify_scheduled_task,
-    toggle_scheduled_task,
-    delete_scheduled_task,
-    list_scheduled_tasks,
-)
 
 logger = get_logger("agents.chat_agent")
 
@@ -63,7 +61,7 @@ def delegate_to_planner(task_summary: str) -> str:
     Returns:
         A confirmation string (routing is handled by the workflow graph).
     """
-    return f"DELEGATE:{task_summary}"
+    return f"DELEGATE: {task_summary}"
 
 
 # ── Tool list for the chat agent ─────────────────────────────────────
@@ -81,6 +79,11 @@ CHAT_AGENT_TOOLS = [
     delete_scheduled_task,
     list_scheduled_tasks,
     delegate_to_planner,
+    create_scheduled_task,
+    delete_scheduled_task,
+    list_scheduled_tasks,
+    modify_scheduled_task,
+    toggle_scheduled_task
 ]
 
 
@@ -99,14 +102,15 @@ def chat_agent_node(state: MainState) -> dict:
     llm = llm_factory.create("GEMINI_FLASH", temperature=0.7, max_output_tokens=1024 * 4)
 
     # Build the react agent
-    agent = create_react_agent(
+    agent = create_agent(
         model=llm,
         tools=CHAT_AGENT_TOOLS,
-        prompt=system_prompt,
+        system_prompt=system_prompt
     )
 
     # Invoke the agent with the full message history
     result = agent.invoke({"messages": state["messages"]})
+    print(result)
 
     response_messages = result.get("messages", [])
 
@@ -184,3 +188,96 @@ def format_response_node(state: MainState) -> dict:
         "messages": [result],
         "final_response": result.content,
     }
+
+
+def chat(user_input: str, config: dict) -> None:
+    if user_input.strip() == "":
+        return
+
+    system_prompt = load_prompt("chat_agent")
+    llm = llm_factory.create("GEMINI_FLASH", temperature=0.7, max_output_tokens=1024 * 4)
+
+    # Build the react agent
+    agent = create_agent(
+        model=llm,
+        tools=CHAT_AGENT_TOOLS,
+        system_prompt=system_prompt,
+        checkpointer=checkpointer
+    )
+
+    result = agent.invoke(
+        {
+            "messages": [HumanMessage(content=user_input)],
+        },
+        config=config
+    )
+
+    pprint(result)
+    response_messages = result.get("messages", [])
+
+    return response_messages
+    
+class ChatAgent:
+    def __init__(self, config: dict):
+        self.config = config
+        self.checkpointer = InMemorySaver()
+        self.state = MainState
+        self.system_prompt = load_prompt("chat_agent")
+        self.llm = llm_factory.create("GEMINI_FLASH", temperature=0.7, max_output_tokens=1024 * 4)
+
+        self.agent = create_agent(
+            model = self.llm,
+            tools = CHAT_AGENT_TOOLS,
+            system_prompt = self.system_prompt,
+            checkpointer=self.checkpointer,
+            state_schema=self.state
+        )
+
+    def chat(self, user_input):
+        result = self.agent.invoke(
+            {
+                "messages": [HumanMessage(content=user_input)],
+                "user_query": user_input,
+                "complexity": "",
+                "implementation_plan": "",
+                "action_checklist": [],
+                "current_task": {},
+                "completed_tasks": [],
+                "final_response": "",
+                "cwd": "/",
+                "iteration": 0,
+                "next_agent": "",
+            },
+            config=self.config,
+        )
+
+        pprint(result)
+        return result
+
+    def stream(self, user_input):
+        result = self.agent.stream(
+            {
+                "messages": [HumanMessage(content=user_input)],
+                "user_query": user_input,
+                "complexity": "",
+                "implementation_plan": "",
+                "action_checklist": [],
+                "current_task": {},
+                "completed_tasks": [],
+                "final_response": "",
+                "cwd": "/",
+                "iteration": 0,
+                "next_agent": "",
+            },
+            config=self.config,
+            stream_mode = "messages",
+            version="v2"
+        )
+
+        for chunk in result:
+            if chunk.get("type", None) == "messages":
+                token, metadata = chunk.get("data", None)
+                if isinstance(token, AIMessageChunk):
+                    yield token.content
+        
+        

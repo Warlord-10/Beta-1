@@ -13,6 +13,7 @@ MODEL_REGISTRY: dict[str, str] = {
     # Gemini models
     "GEMINI_FLASH":      "google:gemini-2.0-flash",
     "GEMINI_FLASH_LITE": "google:gemini-2.0-flash-lite",
+    "GEMMA_4_31B":       "google:gemma-4-31b-it",
 
     # Groq models
     "GROQ_LLAMA_70B":    "groq:llama-3.3-70b-versatile",

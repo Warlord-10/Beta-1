@@ -5,17 +5,19 @@ Run:
 """
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 import uuid
+from pprint import pprint
 
 from langchain_core.messages import HumanMessage
 
-from src.config.settings import settings
+from src.agents.chatagent.chat_agent import chat
 from src.config.logger import get_logger
-from src.workflow import main_graph
+from src.config.settings import settings
 from src.scheduler import scheduler_manager
-from pprint import pprint
+from src.workflow import main_graph
 
 logger = get_logger("cli")
 
@@ -127,9 +129,34 @@ def main():
             except Exception as e:
                 logger.error("TTS playback failed: %s", e)
 
-    
     # Shutdown gracefully
     scheduler_manager.shutdown()
+
+
+def speak(text):
+    if tts_engine:
+        tts_engine.play(text, block=False)
+
+def stream_output(gen):
+    for chunk in gen:
+        print(chunk, end="", flush=True)
+        speak(chunk)
+
+def main_v2():
+    from src.agents.chatagent.chat_agent import ChatAgent
+    thread_id = str(uuid.uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
+
+    chat_agent = ChatAgent(config=config)
+
+    while True:
+        s = input("User: ")
+        if s.lower() in ("quit", "exit", "q"):
+            break
+        
+        res = chat_agent.stream(s)
+        stream_output(res)
+
 
 if __name__ == "__main__":
     # Lazy initialization of TTS if user installed the dependencies
@@ -145,6 +172,6 @@ if __name__ == "__main__":
         logger.warning("TTS Engine failed to initialize: %s", e)
         tts_engine = None
         
-    main()
+    main_v2()
 
 

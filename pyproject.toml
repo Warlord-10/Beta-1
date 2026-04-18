@@ -16,4 +16,5 @@ dependencies = [
     "kokoro>=0.9.4",
     "soundfile",
     "kittentts @ https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl",
+    "langchain>=1.2.15",
 ]
