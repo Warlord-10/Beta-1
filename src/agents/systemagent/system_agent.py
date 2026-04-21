@@ -46,7 +46,7 @@ def system_node(state: MainState) -> dict:
 
     system_prompt = load_prompt("system_agent")
 
-    llm = llm_factory.create("GEMINI_FLASH", temperature=0, max_output_tokens=1024 * 4)
+    llm = llm_factory.create("GEMINI_FLASH", temperature=0, max_tokens=1024 * 4)
     llm_with_tools = llm.bind_tools(all_system_tools)
 
     messages = [

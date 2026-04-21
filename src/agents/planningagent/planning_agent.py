@@ -64,7 +64,7 @@ def should_continue(state: MainState) -> str:
 
 def planning_node(state: MainState) -> dict:
     """Analyze task and produce a structured plan with action checklist."""
-    llm = llm_factory.create("GEMINI_FLASH", temperature=0.7, max_output_tokens=1024 * 8)
+    llm = llm_factory.create("GEMINI_FLASH", temperature=0.7, max_tokens=1024 * 8)
     llm_with_tools = llm.bind_tools(all_planning_tools)
     structured_llm = llm_with_tools.with_structured_output(PlanOutput)
 

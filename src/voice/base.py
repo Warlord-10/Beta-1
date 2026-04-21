@@ -29,8 +29,3 @@ class BaseTTS(ABC):
             block: If True, blocks until playback finishes.
         """
         pass
-
-    @abstractmethod
-    def save(self, text: str, file_path: str) -> None:
-        """Synthesize and directly save audio to a WAV file."""
-        pass

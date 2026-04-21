@@ -19,7 +19,8 @@ MODEL_REGISTRY: dict[str, str] = {
     "GROQ_LLAMA_70B":    "groq:llama-3.3-70b-versatile",
 
     # OpenRouter models
-    "OR_NEMOTRON":       "openrouter:nvidia/nemotron-3-super-120b-a12b"
+    "OR_NEMOTRON":       "openrouter:nvidia/nemotron-3-super-120b-a12b",
+    "OR_GEMMA4":         "openrouter:google/gemma-4-31b-it:free"
 }
 
 

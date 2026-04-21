@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
+import queue
+import time
 from typing import Optional
+
 import numpy as np
-
-try:
-    from kokoro import KPipeline
-except ImportError:
-    KPipeline = None
-
-try:
-    import sounddevice as sd
-except ImportError:
-    sd = None
+import sounddevice as sd
+from kokoro import KPipeline
 
 from src.config.logger import get_logger
+from src.utils.text_utils import clean_text
 from src.voice.base import BaseTTS
 
 logger = get_logger("voice.kokoro")
@@ -31,6 +27,7 @@ class KokoroTTS(BaseTTS):
         self.sample_rate = sample_rate
         self.voice_name = voice_name
         self.speed = speed
+        self.audio_queue = queue.Queue()
         
         # 'a' for American English
         # If voice_name starts with specific letter, we could dynamically detect this, but 'a' is safe default English.
@@ -43,6 +40,8 @@ class KokoroTTS(BaseTTS):
     def synthesize(self, text: str) -> Optional[np.ndarray]:
         if not text.strip():
             return None
+
+        text = clean_text(text)
             
         try:
             logger.debug("Synthesizing text with Kokoro: %r", text[:50] + "...")
@@ -53,48 +52,54 @@ class KokoroTTS(BaseTTS):
                 split_pattern=r'\n+'
             )
             
-            audio_chunks = []
             for i, (gs, ps, audio) in enumerate(generator):
-                audio_chunks.append(audio)
-            
-            if audio_chunks:
-                # audio format is a numpy array
-                return np.concatenate(audio_chunks)
-            return None
+                self.audio_queue.put(audio)
+
         except Exception as e:
             logger.error("Kokoro synthesis failed: %s", str(e))
-            return None
 
     def play(self, text: str, block: bool = True) -> None:
-        if sd is None:
-            logger.error("sounddevice package is not installed.")
-            return
-            
-        if not text.strip():
-            return
-            
-        try:
-            generator = self.pipeline(
-                text, 
-                voice=self.voice_name, 
-                speed=self.speed,
-                split_pattern=r'\n+'
-            )
-            logger.info("Playing streaming audio via Kokoro.")
-            # Because kokoro streams chunks, we can play them efficiently without collecting entirely first.
-            chunk_queue = []
-            
-            # Simple async loop imitation for continuous playback if desired, or synchronous wait:
-            for i, (gs, ps, audio) in enumerate(generator):
-                sd.play(audio, samplerate=self.sample_rate)
-                sd.wait() # Stream step by step to allow overlapping chunk generation implicitly
-                
-        except Exception as e:
-            logger.error("Kokoro playback failed: %s", e)
+        while not self.audio_queue.empty():
+            audio = self.audio_queue.get()
+            sd.play(audio, samplerate=self.sample_rate)
+            sd.wait()             
 
-    def save(self, text: str, file_path: str) -> None:
-        import soundfile as sf
-        audio_data = self.synthesize(text)
-        if audio_data is not None:
-            sf.write(file_path, audio_data, self.sample_rate)
-            logger.info("Saved Kokoro TTS output to %s", file_path)
+    def stream(self):
+        leftover = np.array([], dtype='float32')
+
+        def callback(outdata, frames, time, status):
+            nonlocal leftover
+            needed = frames
+            result = leftover
+
+            if status:
+                print(f"Status: {status}")
+
+            # Pull from queue until we have enough samples
+            while len(result) < needed:
+                try:
+                    chunk = self.audio_queue.get_nowait()
+                    if chunk is None:
+                        break
+                    result = np.concatenate([result, chunk])
+                except queue.Empty:
+                    break
+
+            if len(result) >= needed:
+                outdata[:] = result[:needed].reshape(-1, 1)
+                leftover = result[needed:]  # save the rest for next callback
+            else:
+                # Not enough data, fill what we have then silence
+                outdata[:len(result)] = result.reshape(-1, 1)
+                outdata[len(result):] = 0
+                leftover = np.array([], dtype='float32')
+
+        return sd.OutputStream(
+            samplerate=self.sample_rate,
+            channels=1,
+            dtype='float32',
+            callback=callback
+        )
+
+                
+            

@@ -15,7 +15,8 @@ Exports:
 from __future__ import annotations
 
 from pprint import pprint
-from typing import Annotated, TypedDict
+from typing import Annotated, TypedDict, AsyncGenerator
+import asyncio
 
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, AIMessageChunk
@@ -99,7 +100,7 @@ def chat_agent_node(state: MainState) -> dict:
     - Calling delegate_to_planner for complex tasks
     """
     system_prompt = load_prompt("chat_agent")
-    llm = llm_factory.create("GEMINI_FLASH", temperature=0.7, max_output_tokens=1024 * 4)
+    llm = llm_factory.create("OR_GEMMA4", temperature=0.7, max_tokens=1024 * 4)
 
     # Build the react agent
     agent = create_agent(
@@ -157,7 +158,7 @@ def format_response_node(state: MainState) -> dict:
     """
     system_prompt = load_prompt("chat_agent")
 
-    llm = llm_factory.create("GEMINI_FLASH", temperature=0, max_output_tokens=1024 * 4)
+    llm = llm_factory.create("GEMINI_FLASH", temperature=0, max_tokens=1024 * 4)
 
     # Build context from completed tasks — this is reliable and not truncated
     user_query = state.get("user_query", "")
@@ -195,7 +196,7 @@ def chat(user_input: str, config: dict) -> None:
         return
 
     system_prompt = load_prompt("chat_agent")
-    llm = llm_factory.create("GEMINI_FLASH", temperature=0.7, max_output_tokens=1024 * 4)
+    llm = llm_factory.create("OR_GEMMA4", temperature=0.7, max_tokens=1024 * 4)
 
     # Build the react agent
     agent = create_agent(
@@ -223,12 +224,12 @@ class ChatAgent:
         self.checkpointer = InMemorySaver()
         self.state = MainState
         self.system_prompt = load_prompt("chat_agent")
-        self.llm = llm_factory.create("GEMINI_FLASH", temperature=0.7, max_output_tokens=1024 * 4)
+        self.llm = llm_factory.create("GEMMA_4_31B", temperature=0.7, max_tokens=1024 * 4)
 
         self.agent = create_agent(
             model = self.llm,
             tools = CHAT_AGENT_TOOLS,
-            system_prompt = self.system_prompt,
+            # system_prompt = self.system_prompt,
             checkpointer=self.checkpointer,
             state_schema=self.state
         )
@@ -277,7 +278,5 @@ class ChatAgent:
         for chunk in result:
             if chunk.get("type", None) == "messages":
                 token, metadata = chunk.get("data", None)
-                if isinstance(token, AIMessageChunk):
+                if isinstance(token, AIMessageChunk) and isinstance(token.content, str):
                     yield token.content
-        
-        

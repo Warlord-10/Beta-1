@@ -28,4 +28,5 @@ def get_tts_engine(provider: str, config: Dict[str, Any]) -> BaseTTS:
         from src.voice.kitten_provider import KittenProvider
         return KittenProvider(**config)
     else:
-        raise ValueError(f"Unknown TTS provider: {provider}")
+        return None
+        # raise ValueError(f"Unknown TTS provider: {provider}")

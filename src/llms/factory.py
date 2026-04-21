@@ -3,7 +3,7 @@
 Usage:
     from src.llms import llm_factory
 
-    llm = llm_factory.create("GEMINI_FLASH", temperature=0, max_output_tokens=1024)
+    llm = llm_factory.create("GEMINI_FLASH", temperature=0, max_tokens=1024)
     llm_with_tools = llm_factory.create("GEMINI_FLASH").bind_tools(my_tools)
 
     # Check token usage
@@ -36,19 +36,8 @@ def _build_groq(model: str, **kwargs: Any) -> BaseChatModel:
 
 
 def _build_openrouter(model: str, **kwargs: Any) -> BaseChatModel:
-    import os
-    from langchain_openai import ChatOpenAI
-    api_key = os.environ.get("OPENROUTER_API_KEY", "")
-    if not api_key:
-        raise ValueError(
-            "OPENROUTER_API_KEY environment variable is required for OpenRouter models."
-        )
-    return ChatOpenAI(
-        model=model,
-        openai_api_key=api_key,
-        openai_api_base="https://openrouter.ai/api/v1",
-        **kwargs,
-    )
+    from langchain_openrouter import ChatOpenRouter
+    return ChatOpenRouter(model=model, **kwargs)
 
 
 _PROVIDER_BUILDERS = {
@@ -80,7 +69,7 @@ class LLMFactory:
         model_name: str = "GEMINI_FLASH",
         *,
         temperature: float = 0,
-        max_output_tokens: int | None = None,
+        max_tokens: int | None = None,
         max_retries: int = 2,
         callbacks: list | None = None,
         **extra: Any,
@@ -91,7 +80,7 @@ class LLMFactory:
             model_name: An ALL_CAPS key from MODEL_REGISTRY, or a raw
                         "provider:model" string.
             temperature: Sampling temperature (default 0).
-            max_output_tokens: Cap on generated tokens.
+            max_tokens: Cap on generated tokens.
             max_retries: Number of retries on transient failures.
             callbacks: Additional LangChain callbacks to attach.
             **extra: Extra kwargs forwarded to the provider constructor.
@@ -114,8 +103,8 @@ class LLMFactory:
             "max_retries": max_retries,
             **extra,
         }
-        if max_output_tokens is not None:
-            kwargs["max_output_tokens"] = max_output_tokens
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
 
         # Attach cost-tracking callback
         tracker_cb = CostTrackerCallback(self._cost_tracker, model_name=model)

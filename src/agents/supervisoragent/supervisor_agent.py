@@ -83,7 +83,7 @@ def supervisor_node(state: MainState) -> dict:
     # Multiple pending tasks — use LLM to pick next (respects dependencies)
     system_prompt = load_prompt("supervisor_agent")
 
-    llm = llm_factory.create("GEMINI_FLASH", temperature=0, max_output_tokens=1024)
+    llm = llm_factory.create("GEMINI_FLASH", temperature=0, max_tokens=1024)
     structured_llm = llm.with_structured_output(SupervisorRoutingOutput)
 
     # Format pending tasks clearly for the LLM
