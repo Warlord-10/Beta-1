@@ -25,6 +25,7 @@ from src.scheduler import scheduler_manager
 from src.utils.text_utils import accumulate_sentences
 from src.voice import get_tts_engine
 from src.workflow import main_graph
+from src.cli.tui import TUI
 
 logger = get_logger("cli")
 
@@ -128,8 +129,12 @@ class Pipeline:
 
 
 if __name__ == "__main__":     
-    main = Pipeline()
-    main.run()
+    pipeline = Pipeline()
+
+    terminal_gui = TUI()
+    terminal_gui.run()
+    
+    
 
 
 
