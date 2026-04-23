@@ -68,18 +68,18 @@ def delegate_to_planner(task_summary: str) -> str:
 # ── Tool list for the chat agent ─────────────────────────────────────
 
 CHAT_AGENT_TOOLS = [
+    # File tools
     read_file,
     list_directory,
     get_file_info,
     search_files,
     search_content,
     safe_bash,
-    create_scheduled_task,
-    modify_scheduled_task,
-    toggle_scheduled_task,
-    delete_scheduled_task,
-    list_scheduled_tasks,
+
+    # Core delegate tool
     delegate_to_planner,
+
+    # Scheduler tools
     create_scheduled_task,
     delete_scheduled_task,
     list_scheduled_tasks,
@@ -99,7 +99,7 @@ class ChatAgent:
         self.agent = create_agent(
             model = self.llm,
             tools = CHAT_AGENT_TOOLS,
-            # system_prompt = self.system_prompt,
+            system_prompt = self.system_prompt,
             checkpointer=self.checkpointer,
             state_schema=self.state
         )

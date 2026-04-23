@@ -20,7 +20,7 @@ def accumulate_sentences(chunks):
             buffer += char
             
             # Hard break - always split
-            if char in ".!?":
+            if char in (". ", "!", "?"):
                 if buffer.strip():
                     yield buffer.strip()
                 buffer = ""
@@ -46,7 +46,7 @@ def clean_text(text: str) -> str:
         return ""
 
     text = text.encode('ascii', 'ignore').decode('ascii')
-    text = re.sub(r'[^a-zA-Z0-9\s,.?!]', '', text)
+    text = re.sub(r'[^a-zA-Z0-9\s,.?!\'\"]', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
 
     return text
