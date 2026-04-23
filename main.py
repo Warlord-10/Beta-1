@@ -86,13 +86,14 @@ class Pipeline:
             self.llm_chunk_queue.put(sentence)
 
     def process_tts_stream(self):
+        def _print_word(word: str) -> None:
+            print(f"{Colors.BLUE}{word}{Colors.RESET}", end=" ", flush=True)
+
         while True:
             llm_chunk = self.llm_chunk_queue.get()
             if llm_chunk is None:
                 break
-
-            self.tts.synthesize(llm_chunk)
-            print(f"{Colors.BLUE}{llm_chunk}{Colors.RESET}", end=" ", flush=True)
+            self.tts.synthesize(llm_chunk, word_callback=_print_word)
     
     # WIP, not being used currently
     def stream_asr(self):
