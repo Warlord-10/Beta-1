@@ -130,9 +130,10 @@ class Pipeline:
 
 if __name__ == "__main__":     
     pipeline = Pipeline()
+    pipeline.run()
 
-    terminal_gui = TUI()
-    terminal_gui.run()
+    # terminal_gui = TUI()
+    # terminal_gui.run()
     
     
 

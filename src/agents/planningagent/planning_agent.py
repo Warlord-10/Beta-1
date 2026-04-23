@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
-from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt import ToolNode, tools_condition
 from pydantic import BaseModel, Field
 
 from src.llms import llm_factory
@@ -52,19 +52,9 @@ class PlanOutput(BaseModel):
 
 # ── Graph node ───────────────────────────────────────────────────────
 
-def should_continue(state: MainState) -> str:
-    """Route after planning_node: if tool calls pending → tools, else → done."""
-    last_message = state["messages"][-1]
-
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "tools"
-
-    return "done"
-      
-
 def planning_node(state: MainState) -> dict:
     """Analyze task and produce a structured plan with action checklist."""
-    llm = llm_factory.create("GEMINI_FLASH", temperature=0.7, max_tokens=1024 * 8)
+    llm = llm_factory.create("GEMMA_4_31B", temperature=0.7, max_tokens=1024 * 8)
     llm_with_tools = llm.bind_tools(all_planning_tools)
     structured_llm = llm_with_tools.with_structured_output(PlanOutput)
 
@@ -72,24 +62,6 @@ def planning_node(state: MainState) -> dict:
 
     messages = [
         SystemMessage(content=system_prompt),
-        SystemMessage(content="""
-You are a planner. ALWAYS respond with VALID JSON matching this schema ONLY—no explanations, no Markdown:
-{
-  "task_summary": "Brief summary",
-  "implementation_plan": "Detailed narrative plan as plain text string",
-  "action_checklist": [
-    {
-      "id": "step_1",
-      "intent": "WHAT this step accomplishes — not HOW",
-      "assigned_agent": "coding_agent",
-      "task_description": "What the agent needs to do",
-      "input_context": "What context this agent needs to do its job",
-      "depends_on": [],
-      "expected_output": "What the supervisor should receive back from this agent"
-    }
-  ]
-}
-Do not use Markdown (**bold**, bullet lists). Escape all quotes. Plain text strings only."""),
         HumanMessage(content=f"Task: {state['user_query']}"),
     ]
 
@@ -124,10 +96,7 @@ def build_planning_graph():
     graph.add_node("tools", ToolNode(all_planning_tools))
 
     graph.add_edge(START, "planning_node")
-    graph.add_conditional_edges("planning_node", should_continue, {
-        "tools": "tools",
-        "done": END,
-    })
+    graph.add_conditional_edges("planning_node", tools_condition)
     graph.add_edge("tools", "planning_node")
 
     return graph.compile()

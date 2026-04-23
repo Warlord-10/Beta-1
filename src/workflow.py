@@ -27,18 +27,6 @@ from src.config.logger import get_logger
 logger = get_logger("workflow")
 
 
-# ── Chat agent nodes ────────────────────────────────────────────────
-
-def chat_agent(state: MainState) -> dict:
-    """Primary entry — tool-calling chat agent."""
-    from src.agents.chatagent import chat_agent_node
-    result = chat_agent_node(state)
-    logger.info("\n%s", cost_tracker.get_summary())
-    return result
-
-
-# ── Wrapper nodes for sub-graphs ────────────────────────────────────
-
 def planning_node(state: MainState) -> dict:
     """Invoke the planning sub-graph (black box)."""
     from src.agents.planningagent import planning_agent_graph
@@ -59,7 +47,7 @@ def supervisor_node(state: MainState) -> dict:
     """Invoke the supervisor sub-graph (black box)."""
     from src.agents.supervisoragent import supervisor_agent_graph
 
-    result = supervisor_agent_graph.invoke(state)
+    result = supervisorx_agent_graph.invoke(state)
 
     completed = result.get("completed_tasks", [])
     logger.info("Supervisor complete: %d tasks done", len(completed))
@@ -78,33 +66,18 @@ def format_response(state: MainState) -> dict:
     return result
 
 
-# ── Routing ──────────────────────────────────────────────────────────
-
-def route_after_chat_agent(state: MainState) -> str:
-    """Route based on complexity — set by the chat agent."""
-    if state.get("complexity") == "complex":
-        return "planning"
-    return "__end__"
-
-
 # ── Build main graph ─────────────────────────────────────────────────
 
 def build_main_graph():
     graph = StateGraph(MainState)
 
     # Nodes
-    graph.add_node("chat_agent", chat_agent)
     graph.add_node("planning", planning_node)
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("format_response", format_response)
 
     # Edges
-    graph.add_edge(START, "chat_agent")
-
-    graph.add_conditional_edges("chat_agent", route_after_chat_agent, {
-        "planning": "planning",
-        "__end__": END,
-    })
+    graph.add_edge(START, "planning")
 
     graph.add_edge("planning", "supervisor")
     graph.add_edge("supervisor", "format_response")

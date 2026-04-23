@@ -35,6 +35,14 @@ class TaskItem(TypedDict):
     result: str               # agent's output for this task
 
 
+class CodingState(TypedDict):
+    """State for the coding sub-graph."""
+    current_task: TaskItem
+    messages: Annotated[list[AnyMessage], operator.add]
+    completed_tasks: Annotated[list[TaskItem], operator.add]
+    cwd: str
+
+
 class MainState(TypedDict):
     """Unified state shared across all agents and the orchestrator."""
     messages: Annotated[list[AnyMessage], operator.add]

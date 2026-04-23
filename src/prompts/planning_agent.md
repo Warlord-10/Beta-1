@@ -26,3 +26,24 @@ You are now equipped with file reading and listing tools. **You must use these t
 4. The implementation_plan should be thorough enough that someone could understand the full approach just from reading it.
 5. The action_checklist should be concrete enough that each item can be executed independently by its assigned agent.
 6. Do NOT include tool-level instructions — describe WHAT, not HOW.
+
+# Output Format
+
+Return ONLY a single JSON object (no Markdown, no explanations, no text outside):
+
+{
+  "task_summary": "Summary of the task",
+  "implementation_plan": "Detailed narrative plan as plain text string"",
+  "action_checklist": [
+    {
+      "id": "unique_id",
+      "intent": "What this step accomplishes — not how",
+      "assigned_agent": "agent_name",
+      "task_description": "What the agent needs to do",
+      "input_context": "What context this agent needs",
+      "depends_on": ["prev_step_id"],
+      "expected_output": "What the supervisor should receive"
+    }
+  ]
+}
+
