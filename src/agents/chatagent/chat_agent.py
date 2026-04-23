@@ -99,7 +99,7 @@ class ChatAgent:
         self.agent = create_agent(
             model = self.llm,
             tools = CHAT_AGENT_TOOLS,
-            # system_prompt = self.system_prompt,
+            system_prompt = self.system_prompt,
             checkpointer=self.checkpointer,
             state_schema=self.state
         )

@@ -24,4 +24,5 @@ dependencies = [
     "langchain-openrouter>=0.2.1",
     "textual>=8.2.4",
     "textual-dev>=1.8.0",
+    "kokoro-onnx>=0.3.3",
 ]
