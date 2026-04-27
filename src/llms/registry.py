@@ -20,7 +20,10 @@ MODEL_REGISTRY: dict[str, str] = {
 
     # OpenRouter models
     "OR_NEMOTRON":       "openrouter:nvidia/nemotron-3-super-120b-a12b",
-    "OR_GEMMA4":         "openrouter:google/gemma-4-31b-it:free"
+    "OR_GEMMA4":         "openrouter:google/gemma-4-31b-it:free",
+
+    # NVIDIA models
+    "DS_V4_FLASH":       "nvidia:moonshotai/kimi-k2-instruct-0905"
 }
 
 

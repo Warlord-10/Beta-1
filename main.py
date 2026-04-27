@@ -78,21 +78,20 @@ class ASRWorker:
 
     def run(self) -> None:
         full_text = ""
-        asr_gen = self._asr.stream()
 
-        for text_chunk in asr_gen:
-            if text_chunk is None:
-                continue
+        for text_chunk in self._asr.stream():
+            if text_chunk:
+                full_text += text_chunk
+                print(
+                    f"\r{Colors.GREEN}{Colors.BOLD}You ▸{Colors.RESET} {full_text}",
+                    end="",
+                    flush=True,
+                )
 
-            full_text += text_chunk
-            print(f"{Colors.GREEN}{Colors.BOLD}You ▸{Colors.RESET} {full_text}")
-
-            if not self._is_user_speaking.is_set():
-                print("User has stopped speaking")
+            if not self._is_user_speaking.is_set() and full_text.strip():
+                print()
+                self._input_queue.put(full_text.strip())
                 full_text = ""
-                continue
-
-        print("Run over")
 
 
 class TTSWorker:
@@ -146,21 +145,47 @@ class PipelineV2:
             daemon=True,
         ).start()
 
+    def _drain_llm_queue(self) -> None:
+        while not self._llm_chunk_queue.empty():
+            try:
+                self._llm_chunk_queue.get_nowait()
+            except queue.Empty:
+                break
+
     def _stream_to_tts(self, user_message: str) -> None:
+        self._drain_llm_queue()
+
         llm_gen = self._chat_agent.stream(user_message)
         for sentence in accumulate_sentences(llm_gen):
             if self._is_user_speaking.is_set():
                 logger.debug("Barge-in — aborting LLM stream")
-                break
+                self._drain_llm_queue()
+                return
             self._llm_chunk_queue.put(sentence)
+
+    def _stdin_reader(self) -> None:
+        while True:
+            try:
+                line = input()
+            except EOFError:
+                return
+            if line.strip():
+                self._input_queue.put(line.strip())
 
     def run(self) -> None:
         print_banner()
         self._start_threads()
+        threading.Thread(
+            target=self._stdin_reader,
+            name="stdin-reader",
+            daemon=True,
+        ).start()
 
         while True:
-            user_message = input("User message: ")
-            self._llm_chunk_queue.put(user_message)
+            user_message = self._input_queue.get()
+            print(f"{Colors.BLUE}{Colors.BOLD}Beta-1 ▸{Colors.RESET} ", end="", flush=True)
+            self._stream_to_tts(user_message)
+            print()
 
 
 class Pipeline:

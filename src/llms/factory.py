@@ -39,11 +39,16 @@ def _build_openrouter(model: str, **kwargs: Any) -> BaseChatModel:
     from langchain_openrouter import ChatOpenRouter
     return ChatOpenRouter(model=model, **kwargs)
 
+def _build_nvidia(model: str, **kwargs: Any) -> BaseChatModel:
+    from langchain_nvidia import ChatNVIDIA
+    return ChatNVIDIA(model=model, **kwargs)
+
 
 _PROVIDER_BUILDERS = {
     "google":      _build_google,
     "groq":        _build_groq,
     "openrouter":  _build_openrouter,
+    "nvidia":      _build_nvidia,
 }
 
 

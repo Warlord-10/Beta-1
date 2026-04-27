@@ -10,6 +10,7 @@ except ImportError:
     pass
 
 from src.asr.factory import get_asr_engine
+# from src.asr.noise_suppressor import NoiseSuppressor
 from src.asr.vad import VoiceActivityDetector
 from src.config.logger import get_logger
 
@@ -28,6 +29,7 @@ class ASRService:
         self.chunk_size = int(self.sample_rate * (chunk_duration_ms / 1000.0))
         self.max_silence_chunks = max_silence_chunks
 
+        # self.noise_suppressor = NoiseSuppressor(target_sample_rate=sample_rate)
         self.vad = VoiceActivityDetector(threshold=0.7)
         self.asr = get_asr_engine()
 
@@ -97,6 +99,7 @@ class ASRService:
                 if chunk is None:
                     break
 
+                chunk = self.noise_suppressor.process(chunk, self.sample_rate)
                 is_speech = self._is_speech(chunk)
                 self._speech_buffer.append(chunk)
 
