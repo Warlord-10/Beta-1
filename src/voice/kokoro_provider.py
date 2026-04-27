@@ -1,11 +1,10 @@
-"""Kokoro TTS Provider."""
 
 from __future__ import annotations
 
 import queue
 import threading
 import time
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 import numpy as np
 import sounddevice as sd
@@ -17,142 +16,163 @@ from src.voice.base import BaseTTS
 
 logger = get_logger("voice.kokoro")
 
+# Sentinel for clean shutdown
+_SHUTDOWN = object()
+
 
 class KokoroTTS(BaseTTS):
-    """Kokoro TTS integration for Beta-1."""
+    """
+    Kokoro TTS integration.
 
-    def __init__(self, voice_name: str = "af_heart", sample_rate: int = 24000, speed: float = 1.0):
-        if KPipeline is None:
-            raise RuntimeError("kokoro package is not installed. Run: uv sync")
+    Responsibilities:
+      - synthesize()  : text  ──► numpy audio chunks (generator)
+      - stream()      : pulls from llm_chunk_queue, feeds audio_queue
+      - _callback()   : sounddevice callback, drains audio_queue into DAC
+    """
 
+    def __init__(
+        self,
+        voice_name: str = "af_heart",
+        sample_rate: int = 24000,
+        speed: float = 1.0,
+    ) -> None:
         self.sample_rate = sample_rate
         self.voice_name = voice_name
         self.speed = speed
-        self.audio_queue = queue.Queue()
 
-        lang_code = voice_name[0] if voice_name else 'a'
+        # Injected via attach() — not owned by TTS
+        self._llm_chunk_queue: Optional[queue.Queue] = None
+        self._is_user_speaking: Optional[threading.Event] = None
 
-        logger.info("Initializing Kokoro TTS pipeline (lang=%s)...", lang_code)
+        # Internal audio pipeline
+        self._audio_queue: queue.Queue = queue.Queue(maxsize=20)
+        self._leftover = np.array([], dtype="float32")
+
+        lang_code = voice_name[0] if voice_name else "a"
+        logger.info("Initializing Kokoro TTS (lang=%s, voice=%s)", lang_code, voice_name)
         self.pipeline = KPipeline(lang_code=lang_code)
-        logger.info("Kokoro TTS initialized with voice: %s (speed: %.1f)", self.voice_name, self.speed)
+        logger.info("Kokoro TTS ready")
 
-    def synthesize(self, text: str, word_callback: Optional[Callable[[str], None]] = None) -> None:
-        """Synthesize text and enqueue audio.
+    def attach(
+        self,
+        llm_chunk_queue: queue.Queue,
+        is_user_speaking: threading.Event,
+    ) -> None:
+        """Inject runtime dependencies. Call before stream()."""
+        self._llm_chunk_queue = llm_chunk_queue
+        self._is_user_speaking = is_user_speaking
 
-        Streams the first Kokoro segment to minimise first-audio latency while
-        synthesising remaining segments concurrently so word timing is available.
+    
+    def _check_user_speaking(self) -> bool:
+        if self._is_user_speaking and self._is_user_speaking.is_set():
+            return True
+        return False
 
-        Args:
-            text: Text to synthesise.
-            word_callback: Called with each word string at the moment that word
-                           is estimated to start playing. Runs on a daemon thread.
+
+    def _callback(self, outdata: np.ndarray, frames: int, time_info, status) -> None:
+        if status:
+            logger.warning("Audio status: %s", status)
+
+        needed = frames
+        result = self._leftover
+
+        # Drain audio_queue without blocking — pad with silence if needed
+        while len(result) < needed:
+            try:
+                chunk = self._audio_queue.get_nowait()
+                if chunk is _SHUTDOWN:
+                    break
+                result = np.concatenate([result, chunk])
+            except queue.Empty:
+                break  # not enough audio ready — will pad below
+
+        if len(result) >= needed:
+            outdata[:] = result[:needed].reshape(-1, 1)
+            self._leftover = result[needed:]
+        else:
+            # Pad with silence — avoids underrun noise
+            outdata[: len(result)] = result.reshape(-1, 1)
+            outdata[len(result) :] = 0
+            self._leftover = np.array([], dtype="float32")
+
+
+    def synthesize(self, text: str) -> Iterator[np.ndarray]:
         """
+        Yields numpy audio chunks for the given text.
+        This is a generator — iterate it, don't call it like a function.
+        """
+        text = clean_text(text)
         if not text.strip():
             return
 
-        text = clean_text(text)
-
         try:
             logger.debug("Synthesizing: %r", text[:60])
-            generator = self.pipeline(
+            for _gs, _ps, audio in self.pipeline(
                 text,
                 voice=self.voice_name,
                 speed=self.speed,
-                split_pattern=r'\n+',
-            )
+                split_pattern=r"\n+",
+            ):
+                yield audio
+        except Exception:
+            logger.exception("Kokoro synthesis failed for: %r", text[:60])
 
-            # Collect all segments to compute per-word offsets.
-            # Each segment: (grapheme_text, audio_array).
-            segments: list[tuple[str, np.ndarray]] = []
-            for gs, _ps, audio in generator:
-                segments.append((gs or "", audio))
 
-            if not segments:
-                return
+    def _flush_audio_queue(self) -> None:
+        """Discard buffered audio when user starts speaking (barge-in)."""
+        flushed = 0
+        while not self._audio_queue.empty():
+            try:
+                self._audio_queue.get_nowait()
+                flushed += 1
+            except queue.Empty:
+                break
+        if flushed:
+            logger.debug("Flushed %d audio chunks on barge-in", flushed)
+        self._leftover = np.array([], dtype="float32")
 
-            # Build per-word (word, playback_offset_seconds) schedule.
-            words_with_offsets: list[tuple[str, float]] = []
-            cursor = 0.0  # seconds from start of this synthesize() call
-            for gs, audio in segments:
-                chunk_duration = len(audio) / self.sample_rate
-                words = gs.strip().split()
-                n = len(words)
-                for i, word in enumerate(words):
-                    words_with_offsets.append((word, cursor + (i / max(1, n)) * chunk_duration))
-                cursor += chunk_duration
+    def stream(self) -> None:
+        """
+        Thread entry-point.
+        Pulls sentences from llm_chunk_queue ──► synthesizes ──► audio_queue.
+        """
+        assert self._llm_chunk_queue is not None, "Call attach() before stream()"
 
-            # The _on_start sentinel is processed by the stream callback at the
-            # exact frame when audio begins. It spawns a lightweight timer thread
-            # that fires word_callback at each word's estimated onset time.
-            def _on_start():
-                t0 = time.monotonic()
-
-                def _printer():
-                    for word, offset in words_with_offsets:
-                        remaining = offset - (time.monotonic() - t0)
-                        if remaining > 0:
-                            time.sleep(remaining)
-                        try:
-                            word_callback(word)
-                        except Exception:
-                            pass
-
-                if word_callback:
-                    threading.Thread(target=_printer, daemon=True).start()
-
-            # Enqueue sentinel first, then audio — so text starts when audio starts.
-            self.audio_queue.put(('_on_start', _on_start))
-            for _gs, audio in segments:
-                self.audio_queue.put(audio)
-
-        except Exception as e:
-            logger.error("Kokoro synthesis failed: %s", str(e))
-
-    def play(self, text: str, block: bool = True) -> None:
-        while not self.audio_queue.empty():
-            audio = self.audio_queue.get()
-            if isinstance(audio, tuple):
-                continue
-            sd.play(audio, samplerate=self.sample_rate)
-            sd.wait()
-
-    def stream(self):
-        leftover = np.array([], dtype='float32')
-
-        def callback(outdata, frames, time, status):
-            nonlocal leftover
-            needed = frames
-            result = leftover
-
-            if status:
-                print(f"Status: {status}")
-
-            while len(result) < needed:
-                try:
-                    chunk = self.audio_queue.get_nowait()
-                    if chunk is None:
-                        break
-                    if isinstance(chunk, tuple) and chunk[0] == '_on_start':
-                        try:
-                            chunk[1]()  # spawns word-printer thread
-                        except Exception:
-                            pass
-                        continue
-                    result = np.concatenate([result, chunk])
-                except queue.Empty:
-                    break
-
-            if len(result) >= needed:
-                outdata[:] = result[:needed].reshape(-1, 1)
-                leftover = result[needed:]
-            else:
-                outdata[:len(result)] = result.reshape(-1, 1)
-                outdata[len(result):] = 0
-                leftover = np.array([], dtype='float32')
-
-        return sd.OutputStream(
+        with sd.OutputStream(
             samplerate=self.sample_rate,
             channels=1,
-            dtype='float32',
-            callback=callback,
-        )
+            dtype="float32",
+            callback=self._callback,
+        ):
+            while True:
+                # Barge-in: user started speaking mid-playback
+                if self._check_user_speaking():
+                    self._flush_audio_queue()
+                    time.sleep(0.05)
+                    continue
+
+                try:
+                    llm_chunk = self._llm_chunk_queue.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+
+                # Shutdown sentinel
+                if llm_chunk is None:
+                    logger.info("TTS received shutdown sentinel")
+                    self._audio_queue.put(_SHUTDOWN)
+                    break
+
+                logger.debug("TTS received chunk: %r", llm_chunk[:40])
+                for audio_chunk in self.synthesize(llm_chunk):
+                    # Check barge-in during synthesis too
+                    if self._check_user_speaking():
+                        logger.debug("Barge-in during synthesis — discarding")
+                        break
+                    self._audio_queue.put(audio_chunk)  # blocks if full → backpressure
+
+    def shutdown(self) -> None:
+        if self._llm_chunk_queue:
+            self._llm_chunk_queue.put(None)
+
+    def play(self):
+        pass
