@@ -99,7 +99,7 @@ class ASRService:
                 if chunk is None:
                     break
 
-                chunk = self.noise_suppressor.process(chunk, self.sample_rate)
+                # chunk = self.noise_suppressor.process(chunk, self.sample_rate)
                 is_speech = self._is_speech(chunk)
                 self._speech_buffer.append(chunk)
 
