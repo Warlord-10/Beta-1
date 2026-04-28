@@ -12,7 +12,6 @@ from __future__ import annotations
 MODEL_REGISTRY: dict[str, str] = {
     # Gemini models
     "GEMINI_FLASH":      "google:gemini-2.0-flash",
-    "GEMINI_FLASH_LITE": "google:gemini-2.0-flash-lite",
     "GEMMA_4_31B":       "google:gemma-4-31b-it",
 
     # Groq models
@@ -20,7 +19,11 @@ MODEL_REGISTRY: dict[str, str] = {
 
     # OpenRouter models
     "OR_NEMOTRON":       "openrouter:nvidia/nemotron-3-super-120b-a12b",
-    "OR_GEMMA4":         "openrouter:google/gemma-4-31b-it:free"
+    "OR_GEMMA4":         "openrouter:google/gemma-4-31b-it:free",
+    "OR_GLM_4.5":        "openrouter:z-ai/glm-4.5-air:free",
+
+    # NVIDIA models
+    "DS_V4_FLASH":       "nvidia:moonshotai/kimi-k2-instruct-0905"
 }
 
 

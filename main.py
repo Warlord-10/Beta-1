@@ -18,7 +18,7 @@ from pprint import pprint
 from langchain_core.messages import HumanMessage
 
 from src.agents.chatagent.chat_agent import ChatAgent
-from src.asr.audio_stream import ASRStream
+from src.asr.asr_service import ASRService
 from src.config.logger import get_logger
 from src.config.settings import settings
 from src.scheduler import scheduler_manager
@@ -62,6 +62,131 @@ def print_banner():
     print(banner)
 
 
+class ASRWorker:
+    """Reads from ASRService and pushes completed utterances to input_queue."""
+
+    def __init__(
+        self,
+        asr: ASRService,
+        input_queue: queue.Queue,
+        is_user_speaking: threading.Event,
+    ) -> None:
+        self._asr = asr
+        self._input_queue = input_queue
+        self._buffer: list[str] = []
+        self._is_user_speaking = is_user_speaking
+
+    def run(self) -> None:
+        full_text = ""
+
+        for text_chunk in self._asr.stream():
+            if text_chunk:
+                full_text += text_chunk
+                print(
+                    f"\r{Colors.GREEN}{Colors.BOLD}You ▸{Colors.RESET} {full_text}",
+                    end="",
+                    flush=True,
+                )
+
+            if not self._is_user_speaking.is_set() and full_text.strip():
+                print()
+                self._input_queue.put(full_text.strip())
+                full_text = ""
+
+
+class TTSWorker:
+    def __init__(
+        self,
+        tts,
+        llm_chunk_queue: queue.Queue,
+    ) -> None:
+        self._tts = tts
+        self._llm_chunk_queue = llm_chunk_queue
+
+    def run(self) -> None:
+        self._tts.stream()
+
+
+class PipelineV2:
+    def __init__(self) -> None:
+        self._is_user_speaking = threading.Event()
+
+        self._llm_chunk_queue: queue.Queue = queue.Queue()
+        self._input_queue: queue.Queue = queue.Queue()  # ASR ──► LLM
+
+        thread_id = str(uuid.uuid4())
+        self._chat_agent = ChatAgent(
+            config={"configurable": {"thread_id": thread_id}}
+        )
+
+        # Build components — inject shared state
+        provider_name = settings.TTS_PROVIDER
+        provider_config = settings.TTS_CONFIG.get(provider_name, {})
+
+        self._tts = get_tts_engine(provider_name, provider_config)
+        self._tts.attach(                        # clean injection
+            llm_chunk_queue=self._llm_chunk_queue,
+            is_user_speaking=self._is_user_speaking,
+        )
+
+        self._asr_service = ASRService(is_user_speaking=self._is_user_speaking)
+        self._asr_worker = ASRWorker(self._asr_service, self._input_queue, self._is_user_speaking)
+
+    def _start_threads(self) -> None:
+        threading.Thread(
+            target=self._asr_worker.run,
+            name="asr-worker",
+            daemon=True,
+        ).start()
+
+        threading.Thread(
+            target=self._tts.stream,
+            name="tts-worker",
+            daemon=True,
+        ).start()
+
+    def _drain_llm_queue(self) -> None:
+        while not self._llm_chunk_queue.empty():
+            try:
+                self._llm_chunk_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def _stream_to_tts(self, user_message: str) -> None:
+        self._drain_llm_queue()
+
+        llm_gen = self._chat_agent.stream(user_message)
+        for sentence in accumulate_sentences(llm_gen):
+            if self._is_user_speaking.is_set():
+                logger.debug("Barge-in — aborting LLM stream")
+                self._drain_llm_queue()
+                return
+            self._llm_chunk_queue.put(sentence)
+
+    def _stdin_reader(self) -> None:
+        while True:
+            try:
+                line = input()
+            except EOFError:
+                return
+            if line.strip():
+                self._input_queue.put(line.strip())
+
+    def run(self) -> None:
+        print_banner()
+        self._start_threads()
+        threading.Thread(
+            target=self._stdin_reader,
+            name="stdin-reader",
+            daemon=True,
+        ).start()
+
+        while True:
+            user_message = self._input_queue.get()
+            print(f"{Colors.BLUE}{Colors.BOLD}Beta-1 ▸{Colors.RESET} ", end="", flush=True)
+            self._stream_to_tts(user_message)
+            print()
+
 
 class Pipeline:
     cwd = settings.DEFAULT_CWD
@@ -72,7 +197,7 @@ class Pipeline:
         provider_name = settings.TTS_PROVIDER
         provider_config = settings.TTS_CONFIG.get(provider_name, {})
         
-        self.asr = ASRStream()
+        self.asr = ASRService()
         self.tts = get_tts_engine(provider_name, provider_config)
         self.chat_agent = ChatAgent(config=config)
 
@@ -130,7 +255,7 @@ class Pipeline:
 
 
 if __name__ == "__main__":     
-    pipeline = Pipeline()
+    pipeline = PipelineV2()
     pipeline.run()
 
     # terminal_gui = TUI()

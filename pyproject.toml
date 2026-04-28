@@ -20,9 +20,11 @@ dependencies = [
     "faster-whisper",
     "mlx-whisper",
     "silero-vad",
+    "torchaudio",
     "langchain-openai>=1.1.14",
     "langchain-openrouter>=0.2.1",
     "textual>=8.2.4",
     "textual-dev>=1.8.0",
     "kokoro-onnx>=0.3.3",
+    "langchain-nvidia-ai-endpoints>=1.2.1",
 ]
