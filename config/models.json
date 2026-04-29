@@ -1,0 +1,30 @@
+{
+  "GEMINI_FLASH": {
+    "provider": "google",
+    "model": "gemini-2.0-flash"
+  },
+  "GEMMA_4_31B": {
+    "provider": "google",
+    "model": "gemma-4-31b-it"
+  },
+  "GROQ_LLAMA_70B": {
+    "provider": "groq",
+    "model": "llama-3.3-70b-versatile"
+  },
+  "OR_NEMOTRON": {
+    "provider": "openrouter",
+    "model": "nvidia/nemotron-3-super-120b-a12b"
+  },
+  "OR_GEMMA4": {
+    "provider": "openrouter",
+    "model": "google/gemma-4-31b-it:free"
+  },
+  "OR_GLM_4": {
+    "provider": "openrouter",
+    "model": "z-ai/glm-4.5-air:free"
+  },
+  "DS_V4_FLASH": {
+    "provider": "nvidia",
+    "model": "moonshotai/kimi-k2-instruct-0905"
+  }
+}

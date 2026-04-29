@@ -48,7 +48,11 @@ class SchedulerManager:
             cls._instance._init_scheduler(task_store or TaskStore())
         return cls._instance
 
+    def attach_callback(self, cb):
+        self.send_msg = cb
+
     def _init_scheduler(self, task_store: TaskStore):
+        self.send_msg = None
         self.store = task_store
         
         # Suppress apscheduler noisy logs
@@ -59,14 +63,10 @@ class SchedulerManager:
         logger.info("SchedulerManager started.")
 
         # Load all enabled tasks from DB and schedule them
-        tasks = self.store.list_all()
-        loaded = 0
+        tasks = self.store.list_all_active()
+        logger.info(f"Loaded {len(tasks)} active tasks from store into memory.")
         for task in tasks:
-            if task.is_enabled:
-                self._schedule_job(task)
-                loaded += 1
-                
-        logger.info("Loaded %d active tasks from store into memory.", loaded)
+            self._schedule_job(task)
 
     def _get_trigger(self, task: TaskRecord):
         """Convert schedule_type directly to an APScheduler trigger."""
@@ -108,6 +108,9 @@ class SchedulerManager:
 
     def _execute_task(self, task_id: str):
         """Fired by APScheduler. Loads context, invokes graph, prints output."""
+        
+        assert self.send_msg is not None, "No callback attached for scheduled task execution."
+        
         task = self.store.get(task_id)
         if not task or not task.is_enabled:
             logger.warning("Job fired for disabled or missing task %s", task_id)
@@ -122,46 +125,9 @@ class SchedulerManager:
             
         context += "Please execute this task and provide a final result."
 
-        # Make a deep unique thread_id to not pollute interactive session
-        thread_id = f"sched_{task_id}_{uuid.uuid4().hex[:8]}"
-        config = {"configurable": {"thread_id": thread_id}}
-
         print(f"\n{Colors.MAGENTA}{Colors.BOLD}⏰ Scheduled Task Fired ▸{Colors.RESET} {task.task_description}")
         
-        try:
-            result = main_graph.invoke(
-                {
-                    "messages": [SystemMessage(content=context)],
-                    "user_query": "",
-                    "complexity": "",
-                    "implementation_plan": "",
-                    "action_checklist": [],
-                    "current_task": {},
-                    "completed_tasks": [],
-                    "final_response": "",
-                    "cwd": "", # Default or task specific
-                    "iteration": 0,
-                    "next_agent": "",
-                },
-                config=config,
-            )
-
-            final_response = result.get("final_response", "")
-            if not final_response:
-                # fallback
-                final_response = result["messages"][-1].content if result.get("messages") else "Task executed but returned no response."
-
-            # Persist result
-            now = datetime.now(timezone.utc).isoformat()
-            self.store.update_last_result(task_id, final_response, now)
-            
-            # Print to terminal
-            print(f"{Colors.BLUE}{Colors.BOLD}Beta-1 (Task {task_id[:8]}) ▸{Colors.RESET} {Colors.BLUE}{final_response}{Colors.RESET}\n")
-            
-        except Exception as e:
-            logger.error("Error executing task %s: %s", task_id, e, exc_info=True)
-            self.store.update_last_result(task_id, f"ERROR: {str(e)}")
-            print(f"{Colors.MAGENTA}Task {task_id[:8]} Failed ▸{Colors.RESET} {str(e)}\n")
+        self.send_msg(context)
 
         # Update next_run_at in store if recurred
         job = self.scheduler.get_job(task_id)

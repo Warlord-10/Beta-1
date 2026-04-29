@@ -10,7 +10,9 @@ from datetime import datetime, timezone
 from typing import Optional
 import uuid
 import json
+import time
 
+ID_EPOCH = 1777482000
 
 @dataclass
 class TaskRecord:
@@ -30,7 +32,7 @@ class TaskRecord:
         updated_at:         ISO-8601 timestamp of last modification.
     """
 
-    task_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    task_id: str = field(default_factory=lambda: str(int(time.time() - ID_EPOCH)))
     task_description: str = ""
     schedule_type: str = "cron"           # "cron" | "interval" | "once"
     schedule_params: dict = field(default_factory=dict)

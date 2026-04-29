@@ -43,6 +43,13 @@ from src.tools.scheduler_tools import (create_scheduled_task,
 # Safe system tools
 from src.tools.system_tools.safe_bash import safe_bash
 
+# Memory tools
+from src.tools.memory_tools.daily_memory_tools import (
+    add_to_daily_memory,
+    read_daily_memory
+)
+
+
 logger = get_logger("agents.chat_agent")
 
 
@@ -84,7 +91,11 @@ CHAT_AGENT_TOOLS = [
     delete_scheduled_task,
     list_scheduled_tasks,
     modify_scheduled_task,
-    toggle_scheduled_task
+    toggle_scheduled_task,
+
+    # Memory tools
+    add_to_daily_memory,
+    read_daily_memory,
 ]
 
     
@@ -122,7 +133,6 @@ class ChatAgent:
             config=self.config,
         )
 
-        pprint(result)
         return result
 
     def stream(self, user_input):

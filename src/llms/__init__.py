@@ -9,7 +9,7 @@ Public API:
 
 from src.llms.factory import LLMFactory, llm_factory
 from src.llms.cost_tracker import cost_tracker, CostTracker
-from src.llms.registry import MODEL_REGISTRY, resolve_model
+from src.llms.registry import MODEL_REGISTRY
 
 __all__ = [
     "LLMFactory",
@@ -17,5 +17,4 @@ __all__ = [
     "cost_tracker",
     "CostTracker",
     "MODEL_REGISTRY",
-    "resolve_model",
 ]

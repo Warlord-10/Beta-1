@@ -20,8 +20,8 @@ from langchain_core.messages import HumanMessage
 from src.agents.chatagent.chat_agent import ChatAgent
 from src.asr.asr_service import ASRService
 from src.config.logger import get_logger
-from src.config.settings import settings
-from src.scheduler import scheduler_manager
+from src.config.settings import SETTINGS
+from src.scheduler.scheduler_manager import SchedulerManager
 from src.utils.text_utils import accumulate_sentences
 from src.voice import get_tts_engine
 from src.workflow import main_graph
@@ -111,8 +111,11 @@ class PipelineV2:
     def __init__(self) -> None:
         self._is_user_speaking = threading.Event()
 
+        # Buffer to maintain the llm output.
         self._llm_chunk_queue: queue.Queue = queue.Queue()
-        self._input_queue: queue.Queue = queue.Queue()  # ASR ──► LLM
+
+        # Buffer to maintain the user input (text/speech).
+        self._input_queue: queue.Queue = queue.Queue()
 
         thread_id = str(uuid.uuid4())
         self._chat_agent = ChatAgent(
@@ -120,24 +123,31 @@ class PipelineV2:
         )
 
         # Build components — inject shared state
-        provider_name = settings.TTS_PROVIDER
-        provider_config = settings.TTS_CONFIG.get(provider_name, {})
+        provider_name = SETTINGS.TTS_PROVIDER
+        provider_config = SETTINGS.TTS_CONFIG.get(provider_name, {})
 
+        # TTS Configuration
         self._tts = get_tts_engine(provider_name, provider_config)
-        self._tts.attach(                        # clean injection
+        self._tts.attach(
             llm_chunk_queue=self._llm_chunk_queue,
             is_user_speaking=self._is_user_speaking,
         )
 
+        # ASR Configuration
         self._asr_service = ASRService(is_user_speaking=self._is_user_speaking)
         self._asr_worker = ASRWorker(self._asr_service, self._input_queue, self._is_user_speaking)
 
+        # Scheduler Configuration
+        self.scheduler = SchedulerManager()
+        self.scheduler.attach_callback(self._push_to_llm)
+
     def _start_threads(self) -> None:
-        threading.Thread(
-            target=self._asr_worker.run,
-            name="asr-worker",
-            daemon=True,
-        ).start()
+        if SETTINGS.IS_ASR == "true":
+            threading.Thread(
+                target=self._asr_worker.run,
+                name="asr-worker",
+                daemon=True,
+            ).start()
 
         threading.Thread(
             target=self._tts.stream,
@@ -152,11 +162,12 @@ class PipelineV2:
             except queue.Empty:
                 break
 
-    def _stream_to_tts(self, user_message: str) -> None:
+    def _push_to_llm(self, user_message: str) -> None:
         self._drain_llm_queue()
 
         llm_gen = self._chat_agent.stream(user_message)
         for sentence in accumulate_sentences(llm_gen):
+            print("chunk from llm: ", sentence)
             if self._is_user_speaking.is_set():
                 logger.debug("Barge-in — aborting LLM stream")
                 self._drain_llm_queue()
@@ -166,7 +177,7 @@ class PipelineV2:
     def _stdin_reader(self) -> None:
         while True:
             try:
-                line = input()
+                line = input("Your input: ")
             except EOFError:
                 return
             if line.strip():
@@ -184,74 +195,8 @@ class PipelineV2:
         while True:
             user_message = self._input_queue.get()
             print(f"{Colors.BLUE}{Colors.BOLD}Beta-1 ▸{Colors.RESET} ", end="", flush=True)
-            self._stream_to_tts(user_message)
+            self._push_to_llm(user_message)
             print()
-
-
-class Pipeline:
-    cwd = settings.DEFAULT_CWD
-
-    def __init__(self):
-        thread_id = str(uuid.uuid4())
-        config = {"configurable": {"thread_id": thread_id}}
-        provider_name = settings.TTS_PROVIDER
-        provider_config = settings.TTS_CONFIG.get(provider_name, {})
-        
-        self.asr = ASRService()
-        self.tts = get_tts_engine(provider_name, provider_config)
-        self.chat_agent = ChatAgent(config=config)
-
-        self.temp_tts = self.tts.stream()
-        self.temp_tts.start()
-
-        self.llm_chunk_queue = queue.Queue()
-
-    def process_llm_stream(self, gen):
-        for sentence in accumulate_sentences(gen):
-            self.llm_chunk_queue.put(sentence)
-
-    def process_tts_stream(self):
-        def _print_word(word: str) -> None:
-            print(f"{Colors.BLUE}{word}{Colors.RESET}", end=" ", flush=True)
-
-        while True:
-            llm_chunk = self.llm_chunk_queue.get()
-            if llm_chunk is None:
-                break
-            self.tts.synthesize(llm_chunk, word_callback=_print_word)
-    
-    # WIP, not being used currently
-    def stream_asr(self):
-        final_text = ""
-        for chunk in self.asr.stream():
-            final_text += chunk
-
-        return final_text + " "
-
-    def run(self):
-        tts_thread = threading.Thread(target=self.process_tts_stream, daemon=True)
-        tts_thread.start()
-
-        print_banner()
-        
-        while True:
-            prompt = f"{Colors.GRAY}[{self.cwd}]{Colors.RESET} {Colors.GREEN}{Colors.BOLD}You ▸{Colors.RESET} "
-            user_input = input(prompt).strip()
-            print(f"{Colors.BLUE}{Colors.BOLD}Beta-1 ▸{Colors.RESET}", end="", flush=True)
-
-            if user_input.lower() in ("quit", "exit", "q"):
-                print(f"{Colors.YELLOW}👋 Goodbye!{Colors.RESET}")
-                break
-
-            if user_input.lower() == "/voice":
-                print("Voice mode activated. Say 'quit' to exit voice mode.")
-                s = self.stream_asr()
-            
-            res = self.chat_agent.stream(user_input)
-            self.process_llm_stream(res)
-            print()
-
-        tts_thread.join()
 
 
 if __name__ == "__main__":     

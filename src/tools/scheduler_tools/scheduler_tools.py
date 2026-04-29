@@ -9,12 +9,14 @@ from __future__ import annotations
 import json
 from langchain_core.tools import tool
 
-from src.scheduler import task_store, scheduler_manager
+from src.scheduler import task_store
+from src.scheduler.scheduler_manager import SchedulerManager
 from src.scheduler.models import TaskRecord
 from src.config.logger import get_logger
 
 logger = get_logger("tools.scheduler_tools")
 
+scheduler_manager = SchedulerManager()
 
 @tool
 def create_scheduled_task(
