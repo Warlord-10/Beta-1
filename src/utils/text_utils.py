@@ -13,7 +13,7 @@ def accumulate_sentences(chunks):
     chunks: iterable of strings (LLM stream)
     yields: complete sentences/phrases ready for TTS
     """
-    buffer = ""
+    buffer = " "
     
     for chunk in chunks:        # ← iterates over LLM stream
         for char in chunk:      # ← iterates over chars in each chunk
@@ -23,19 +23,19 @@ def accumulate_sentences(chunks):
             if char in (". ", "!", "?"):
                 if buffer.strip():
                     yield buffer.strip()
-                buffer = ""
+                buffer = " "
             
             # Soft break - only if buffer is large enough
-            elif char == "," and len(buffer) > 80:
+            elif char == "," and len(buffer) > 60:
                 if buffer.strip():
                     yield buffer.strip()
-                buffer = ""
+                buffer = " "
             
             # Force break on space if too long
-            elif char == " " and len(buffer) > 150:
+            elif char == " " and len(buffer) > 120:
                 if buffer.strip():
                     yield buffer.strip()
-                buffer = ""
+                buffer = " "
     
     # Flush remaining
     if buffer.strip():

@@ -1,7 +1,8 @@
-import asyncio
-import random
+from __future__ import annotations
 
-from textual import on, work
+from typing import Optional, TYPE_CHECKING
+
+from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
@@ -16,20 +17,24 @@ from textual.widgets import (
 from .widgets import AudioBars, ChatMessage, AUDIO_AVAILABLE
 from .panes import (
     ContextsPane,
+    CostsPane,
     SchedulesPane,
     SessionsPane,
     SettingsPane,
     TasksPane,
 )
 
+if TYPE_CHECKING:
+    from src.pipeline import Pipeline
+
 
 class TUI(App):
-    """A modern Textual chat GUI."""
+    """Textual chat GUI bound to the chat pipeline."""
 
-    TITLE = "Claude Terminal"
-    SUB_TITLE = "A modern TUI chat experience"
+    TITLE = "Beta-1"
+    SUB_TITLE = "Personal AI Assistant"
 
-    TAB_IDS = ("chat", "settings", "schedules", "tasks", "sessions", "contexts")
+    TAB_IDS = ("chat", "settings", "schedules", "tasks", "costs", "sessions", "contexts")
 
     CSS = """
     Screen {
@@ -45,7 +50,7 @@ class TUI(App):
     }
 
     #chat-scroll {
-        padding: 1 2;
+        padding: 0 1;
         height: 1fr;
         scrollbar-gutter: stable;
     }
@@ -64,7 +69,7 @@ class TUI(App):
     }
 
     #chat-input {
-        margin: 1 2;
+        margin: 0 1;
         border: round $primary;
     }
     #chat-input:focus {
@@ -79,10 +84,12 @@ class TUI(App):
         Binding("ctrl+d", "toggle_dark", "Theme", show=True),
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, pipeline: Optional["Pipeline"] = None) -> None:
         super().__init__()
+        self._pipeline = pipeline
         self._live_active = False
         self._message_count = 0
+        self._active_bot_msg: Optional[ChatMessage] = None
 
     # --- layout ---------------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -94,37 +101,71 @@ class TUI(App):
                 yield SettingsPane()
             with TabPane("📅 Schedules", id="schedules"):
                 yield SchedulesPane()
-            with TabPane("✅ Tasks", id="tasks"):
-                yield TasksPane()
-            with TabPane("🗂️ Sessions", id="sessions"):
-                yield SessionsPane()
-            with TabPane("📚 Contexts", id="contexts"):
-                yield ContextsPane()
+            # with TabPane("✅ Tasks", id="tasks"):
+            #     yield TasksPane()
+            with TabPane("💰 Costs", id="costs"):
+                yield CostsPane()
+            # with TabPane("🗂️ Sessions", id="sessions"):
+            #     yield SessionsPane()
+            # with TabPane("📚 Contexts", id="contexts"):
+            #     yield ContextsPane()
         with Container(id="bottom-area"):
             yield Static(self._status_text(), id="status-bar", markup=True)
             yield AudioBars(id="audio-bars")
             yield Input(
-                placeholder="Type a message or /command (try /help, /tasks, /live)…",
+                placeholder="Type a message or /command (try /help, /cost, /schedules)…",
                 id="chat-input",
             )
 
     def on_mount(self) -> None:
         self.query_one("#chat-input", Input).focus()
         self._post_bot(
-            """
-[CYAN][BOLD]
-╔════════════════════════════════════════════════╗
-║                                                ║
-║   ██████  ███████ ████████  █████     ████     ║
-║   ██   ██ ██         ██    ██   ██      ██     ║
-║   ██████  █████      ██    ███████  ██  ██     ║
-║   ██   ██ ██         ██    ██   ██      ██     ║
-║   ██████  ███████    ██    ██   ██    ██████   ║
-║                                                ║
-╚════════════════════════════════════════════════╝
-[DIM] Personal AI Assistant • by Deepanshu Joshi
-            """
+            "[bold cyan]Beta-1[/] ready. [dim]Personal AI Assistant • by Deepanshu Joshi[/]"
         )
+        if self._pipeline is not None:
+            self._pipeline.attach_output(
+                on_chunk=self._on_pipeline_chunk,
+                on_turn_start=self._on_pipeline_turn_start,
+                on_turn_end=self._on_pipeline_turn_end,
+            )
+            self._pipeline.attach_user_input_listener(self._on_pipeline_user_msg)
+
+        # Auto-refresh live tabs every 30s.
+        self.set_interval(30.0, self._refresh_live_tabs)
+
+    # --- pipeline callbacks (run on worker threads) ---------------------------
+    def _on_pipeline_turn_start(self) -> None:
+        self.call_from_thread(self._start_bot_bubble)
+
+    def _on_pipeline_chunk(self, chunk: str) -> None:
+        self.call_from_thread(self._append_to_bot_bubble, chunk)
+
+    def _on_pipeline_turn_end(self) -> None:
+        self.call_from_thread(self._end_bot_bubble)
+
+    def _on_pipeline_user_msg(self, text: str) -> None:
+        self.call_from_thread(self._post_user, text)
+
+    # --- bot streaming bubble -------------------------------------------------
+    def _start_bot_bubble(self) -> None:
+        scroll = self.query_one("#chat-scroll", VerticalScroll)
+        msg = ChatMessage("", is_user=False)
+        scroll.mount(msg)
+        scroll.scroll_end(animate=False)
+        self._active_bot_msg = msg
+
+    def _append_to_bot_bubble(self, chunk: str) -> None:
+        if self._active_bot_msg is None:
+            self._start_bot_bubble()
+        assert self._active_bot_msg is not None
+        self._active_bot_msg.append(chunk)
+        scroll = self.query_one("#chat-scroll", VerticalScroll)
+        scroll.scroll_end(animate=False)
+
+    def _end_bot_bubble(self) -> None:
+        self._active_bot_msg = None
+        self._message_count += 1
+        self._refresh_status()
 
     # --- status bar -----------------------------------------------------------
     def _status_text(self) -> str:
@@ -146,7 +187,7 @@ class TUI(App):
     def _post(self, text: str, is_user: bool) -> None:
         scroll = self.query_one("#chat-scroll", VerticalScroll)
         scroll.mount(ChatMessage(text, is_user=is_user))
-        scroll.scroll_end(animate=True)
+        scroll.scroll_end(animate=False)
         self._message_count += 1
         self._refresh_status()
 
@@ -167,7 +208,10 @@ class TUI(App):
             self._handle_command(text)
         else:
             self._post_user(text)
-            self._fake_reply(text)
+            if self._pipeline is not None:
+                self._pipeline.submit(text)
+            else:
+                self._post_bot("[red]No pipeline attached.[/]")
 
     # --- commands -------------------------------------------------------------
     def _handle_command(self, raw: str) -> None:
@@ -191,43 +235,10 @@ class TUI(App):
         elif cmd == "theme":
             self.action_toggle_dark()
         elif cmd == "cost":
-            self._post_bot(self._cost_text())
+            self.query_one(TabbedContent).active = "costs"
+            self._refresh_pane(CostsPane)
         else:
             self._post_bot(f"❓ Unknown command: [b]/{cmd}[/]. Try [b]/help[/].")
-
-    def _cost_text(self) -> str:
-        from datetime import datetime, timedelta, timezone
-        from src.cost.store import cost_store
-
-        now = datetime.now(timezone.utc)
-        start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_week = now - timedelta(days=7)
-
-        today = cost_store.total_cost(since=start_today)
-        week = cost_store.total_cost(since=start_week)
-        all_time = cost_store.total_cost()
-        rows = cost_store.summary()
-
-        lines = [
-            "💰 [bold]LLM Cost[/]\n",
-            f"  Today:     ${today:.4f}",
-            f"  Last 7d:   ${week:.4f}",
-            f"  All time:  ${all_time:.4f}",
-        ]
-        if rows:
-            lines.append("\n  [b]Per model[/]")
-            for r in rows:
-                lines.append(
-                    f"    {r['registry_key']} ({r['provider']}): "
-                    f"${r['estimated_cost']:.4f} — "
-                    f"{int(r['input_tokens']):,} in / "
-                    f"{int(r['output_tokens']):,} out / "
-                    f"{int(r['cached_tokens']):,} cached "
-                    f"({int(r['call_count'])} calls)"
-                )
-        else:
-            lines.append("\n  No usage recorded yet.")
-        return "\n".join(lines)
 
     def _help_text(self) -> str:
         return (
@@ -236,15 +247,37 @@ class TUI(App):
             "  [b]/settings[/]   Open settings\n"
             "  [b]/schedules[/]  Open your schedules\n"
             "  [b]/tasks[/]      Open your tasks\n"
+            "  [b]/costs[/]      Open the cost tab\n"
             "  [b]/sessions[/]   Open past sessions\n"
             "  [b]/contexts[/]   Open loaded contexts\n"
             "  [b]/live[/]       Toggle live audio visualizer (Ctrl+L)\n"
             "  [b]/clear[/]      Clear the conversation (Ctrl+K)\n"
             "  [b]/theme[/]      Toggle dark/light theme (Ctrl+D)\n"
-            "  [b]/cost[/]       Show LLM cost summary\n"
+            "  [b]/cost[/]       Switch to Costs tab\n"
             "  [b]/help[/]       Show this help\n"
             "  [b]/quit[/]       Exit (Ctrl+C)"
         )
+
+    # --- tab refresh ----------------------------------------------------------
+    def _refresh_live_tabs(self) -> None:
+        self._refresh_pane(SchedulesPane)
+        self._refresh_pane(CostsPane)
+
+    def _refresh_pane(self, pane_cls) -> None:
+        try:
+            pane = self.query_one(pane_cls)
+            pane.refresh_data()
+        except Exception:
+            pass
+
+    @on(TabbedContent.TabActivated)
+    def _on_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        active = event.tab.id or ""
+        # Textual gives back tab ids prefixed with "--content-tab-"; check suffix.
+        if active.endswith("schedules"):
+            self._refresh_pane(SchedulesPane)
+        elif active.endswith("costs"):
+            self._refresh_pane(CostsPane)
 
     # --- actions --------------------------------------------------------------
     def action_toggle_live(self) -> None:
@@ -273,11 +306,11 @@ class TUI(App):
         for child in list(scroll.children):
             child.remove()
         self._message_count = 0
+        self._active_bot_msg = None
         self._refresh_status()
         self._post_bot("🧹 Chat cleared.")
 
     def action_toggle_dark(self) -> None:
-        # Works across recent Textual versions.
         try:
             self.theme = (
                 "textual-light" if self.theme == "textual-dark" else "textual-dark"
@@ -289,24 +322,9 @@ class TUI(App):
                 pass
         self._post_bot("🎨 Theme toggled.")
 
-    # --- fake bot replies -----------------------------------------------------
-    @work(exclusive=False)
-    async def _fake_reply(self, user_text: str) -> None:
-        # Small "typing" delay for realism
-        await asyncio.sleep(0.4 + random.random() * 0.6)
-        snippets = [
-            "Got it! Tell me more.",
-            f"Interesting take on \"{user_text[:40]}\" — what led you there?",
-            "Mm, I hear you. What's the outcome you're hoping for?",
-            "Let's dig in. Which part is most important to you?",
-            "✨ Noted. I'll keep that in context for the rest of our chat.",
-        ]
-        self._post_bot(random.choice(snippets))
-
     # --- cleanup --------------------------------------------------------------
     async def on_unmount(self) -> None:
         try:
             self.query_one("#audio-bars", AudioBars).stop()
         except Exception:
             pass
-
