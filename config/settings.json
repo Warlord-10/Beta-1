@@ -1,7 +1,9 @@
 {
   "LOG_MODE": "file",
   "TTS_PROVIDER": "kokoro",
-  "IS_ASR": "false",
+  "IS_ASR_ENABLED": "false",
+  "IS_TTS_ENABLED": "false",
+  "daily_budget_usd": 0,
   "TTS_CONFIG": {
     "supertonic": {
       "voice_name": "F1",

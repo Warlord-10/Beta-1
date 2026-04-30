@@ -112,9 +112,11 @@ class PipelineV2:
         self._is_user_speaking = threading.Event()
 
         # Buffer to maintain the llm output.
+        # This buffer is fed to the TTS engine for speech synthesis
         self._llm_chunk_queue: queue.Queue = queue.Queue()
 
         # Buffer to maintain the user input (text/speech).
+        # This buffer is sent to the LLM for response
         self._input_queue: queue.Queue = queue.Queue()
 
         thread_id = str(uuid.uuid4())
@@ -142,18 +144,19 @@ class PipelineV2:
         self.scheduler.attach_callback(self._push_to_llm)
 
     def _start_threads(self) -> None:
-        if SETTINGS.IS_ASR == "true":
+        if SETTINGS.IS_ASR_ENABLED == "true":
             threading.Thread(
                 target=self._asr_worker.run,
                 name="asr-worker",
                 daemon=True,
             ).start()
 
-        threading.Thread(
-            target=self._tts.stream,
-            name="tts-worker",
-            daemon=True,
-        ).start()
+        if SETTINGS.IS_TTS_ENABLED == "true":
+            threading.Thread(
+                target=self._tts.stream,
+                name="tts-worker",
+                daemon=True,
+            ).start()
 
     def _drain_llm_queue(self) -> None:
         while not self._llm_chunk_queue.empty():
@@ -168,11 +171,14 @@ class PipelineV2:
         llm_gen = self._chat_agent.stream(user_message)
         for sentence in accumulate_sentences(llm_gen):
             print("chunk from llm: ", sentence)
+            
             if self._is_user_speaking.is_set():
                 logger.debug("Barge-in — aborting LLM stream")
                 self._drain_llm_queue()
                 return
-            self._llm_chunk_queue.put(sentence)
+
+            if SETTINGS.IS_TTS_ENABLED == "true":
+                self._llm_chunk_queue.put(sentence)
 
     def _stdin_reader(self) -> None:
         while True:

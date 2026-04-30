@@ -51,9 +51,6 @@ _PROVIDER_BUILDERS = {
     "nvidia":      _build_nvidia,
 }
 
-
-# ── Factory class ────────────────────────────────────────────────────
-
 class LLMFactory:
 
     def __init__(self, tracker: CostTracker | None = None) -> None:
@@ -96,7 +93,12 @@ class LLMFactory:
             kwargs["max_tokens"] = max_tokens
 
         # Attach cost-tracking callback
-        tracker_cb = CostTrackerCallback(self._cost_tracker, model_name=model)
+        tracker_cb = CostTrackerCallback(
+            self._cost_tracker,
+            registry_key=model_name,
+            model_name=model,
+            provider=provider,
+        )
         all_callbacks = [tracker_cb]
         if callbacks:
             all_callbacks.extend(callbacks)
@@ -106,7 +108,5 @@ class LLMFactory:
         logger.debug("Created LLM: provider=%s, model=%s", provider, model)
         return llm
 
-
-# ── Module-level singleton ───────────────────────────────────────────
 
 llm_factory = LLMFactory()
