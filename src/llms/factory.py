@@ -16,7 +16,7 @@ from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
-from src.llms.registry import resolve_model
+from src.llms.registry import MODEL_REGISTRY
 from src.llms.cost_tracker import cost_tracker as _default_tracker, CostTracker, CostTrackerCallback
 from src.config.logger import get_logger
 
@@ -51,15 +51,7 @@ _PROVIDER_BUILDERS = {
     "nvidia":      _build_nvidia,
 }
 
-
-# ── Factory class ────────────────────────────────────────────────────
-
 class LLMFactory:
-    """Central LLM provider — single point of access for all agents.
-
-    Resolves model aliases from the registry, builds the correct
-    provider-specific LangChain model, and auto-attaches cost tracking.
-    """
 
     def __init__(self, tracker: CostTracker | None = None) -> None:
         self._cost_tracker = tracker or _default_tracker
@@ -79,21 +71,10 @@ class LLMFactory:
         callbacks: list | None = None,
         **extra: Any,
     ) -> BaseChatModel:
-        """Create a LangChain chat model from a registry alias.
 
-        Args:
-            model_name: An ALL_CAPS key from MODEL_REGISTRY, or a raw
-                        "provider:model" string.
-            temperature: Sampling temperature (default 0).
-            max_tokens: Cap on generated tokens.
-            max_retries: Number of retries on transient failures.
-            callbacks: Additional LangChain callbacks to attach.
-            **extra: Extra kwargs forwarded to the provider constructor.
-
-        Returns:
-            A ready-to-use BaseChatModel with cost tracking pre-attached.
-        """
-        provider, model = resolve_model(model_name)
+        config = getattr(MODEL_REGISTRY, model_name)
+        provider = config.get("provider")
+        model = config.get("model")
 
         builder = _PROVIDER_BUILDERS.get(provider)
         if builder is None:
@@ -112,7 +93,12 @@ class LLMFactory:
             kwargs["max_tokens"] = max_tokens
 
         # Attach cost-tracking callback
-        tracker_cb = CostTrackerCallback(self._cost_tracker, model_name=model)
+        tracker_cb = CostTrackerCallback(
+            self._cost_tracker,
+            registry_key=model_name,
+            model_name=model,
+            provider=provider,
+        )
         all_callbacks = [tracker_cb]
         if callbacks:
             all_callbacks.extend(callbacks)
@@ -122,7 +108,5 @@ class LLMFactory:
         logger.debug("Created LLM: provider=%s, model=%s", provider, model)
         return llm
 
-
-# ── Module-level singleton ───────────────────────────────────────────
 
 llm_factory = LLMFactory()

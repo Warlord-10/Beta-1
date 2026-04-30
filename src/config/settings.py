@@ -1,59 +1,44 @@
 """Beta-1 — Central configuration / settings.
 
-All tuneable knobs live here so you never have to hunt through code.
+User-tunable values are loaded from `config/settings.json` at import time.
+Top-level scalars can be overridden with environment variables of the same
+name (e.g. `TTS_PROVIDER=kitten python main.py`).
+
+Override the file location with the BETA1_SETTINGS_FILE env var.
 """
 
-import os
-from datetime import datetime, timedelta, date
-from dataclasses import dataclass
 import json
+import os
+from dataclasses import dataclass, make_dataclass
+from datetime import date
 from pathlib import Path
 
-# Where agent & tool logs are written.
-#   "terminal"  → print to stdout/stderr only
-#   "file"      → write to LOG_FILE_PATH only
-#   "both"      → write to both stdout and LOG_FILE_PATH
-LOG_MODE: str = "file"
 
-# Path to the log file (used when LOG_MODE is "file" or "both")
-LOG_FILE_PATH: str = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "logs",
-    f"{date.today()}.log",
-)
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_SETTINGS_FILE = _REPO_ROOT / "config" / "settings.json"
 
-DEFAULT_CWD: str = os.getcwd()
 
-# The active TTS provider. Choose "supertonic", "kokoro", or "kitten"
-TTS_PROVIDER: str = "kokoro"
+def _load_settings_file() -> dict:
+    path = Path(os.environ.get("BETA1_SETTINGS_FILE", _DEFAULT_SETTINGS_FILE))
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Settings file not found: {path}. "
+            f"Set BETA1_SETTINGS_FILE or create the file."
+        )
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid settings file {path}: expected JSON object.")
+    return data
 
-# Configuration for the Text-to-Speech engines
-TTS_CONFIG = {
-    "supertonic": {
-        "voice_name": "F1",
-        "sample_rate": 24000,
-        "speed": 1.3,
-        "total_steps": 30,
-    },
-    "kokoro": {
-        "voice_name": "af_heart",
-        "sample_rate": 24000,
-        "speed": 1.3,
-    },
-    "kitten": {
-        "model_name": "KittenML/kitten-tts-mini-0.8",
-        "voice_name": "Jasper",
-        "sample_rate": 24000,
-        "speed": 1.3,
-    }
-}
 
-@dataclass
-class Settings:
-    LOG_MODE: str
-    LOG_FILE_PATH: str
-    DEFAULT_CWD: str
-    TTS_PROVIDER: str
-    TTS_CONFIG: dict
+_data = _load_settings_file()
+_data.update({
+    "LOG_FILE_PATH": os.path.join(
+        _REPO_ROOT, "logs", f"{date.today()}.log"
+    ),
+    "DEFAULT_CWD": os.getcwd(),
+})
 
-settings = Settings(LOG_MODE, LOG_FILE_PATH, DEFAULT_CWD, TTS_PROVIDER, TTS_CONFIG)     
+Settings = make_dataclass("Settings",[(k, type(v)) for k, v in _data.items()])
+SETTINGS = Settings(**_data)

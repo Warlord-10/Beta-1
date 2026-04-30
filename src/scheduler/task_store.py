@@ -132,6 +132,19 @@ class TaskStore:
 
         return [TaskRecord.from_row(r) for r in rows]
 
+    def list_all_active(self) -> list[TaskRecord]:
+        """Fetch all tasks, ordered by creation date."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM tasks WHERE is_enabled = 1 ORDER BY created_at DESC"
+                ).fetchall()
+            finally:
+                conn.close()
+
+        return [TaskRecord.from_row(r) for r in rows]
+
     def update(self, task_id: str, **fields) -> Optional[TaskRecord]:
         """Partial update — only the provided fields are changed.
 

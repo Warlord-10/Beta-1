@@ -190,8 +190,44 @@ class TUI(App):
             self.exit()
         elif cmd == "theme":
             self.action_toggle_dark()
+        elif cmd == "cost":
+            self._post_bot(self._cost_text())
         else:
             self._post_bot(f"❓ Unknown command: [b]/{cmd}[/]. Try [b]/help[/].")
+
+    def _cost_text(self) -> str:
+        from datetime import datetime, timedelta, timezone
+        from src.cost.store import cost_store
+
+        now = datetime.now(timezone.utc)
+        start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_week = now - timedelta(days=7)
+
+        today = cost_store.total_cost(since=start_today)
+        week = cost_store.total_cost(since=start_week)
+        all_time = cost_store.total_cost()
+        rows = cost_store.summary()
+
+        lines = [
+            "💰 [bold]LLM Cost[/]\n",
+            f"  Today:     ${today:.4f}",
+            f"  Last 7d:   ${week:.4f}",
+            f"  All time:  ${all_time:.4f}",
+        ]
+        if rows:
+            lines.append("\n  [b]Per model[/]")
+            for r in rows:
+                lines.append(
+                    f"    {r['registry_key']} ({r['provider']}): "
+                    f"${r['estimated_cost']:.4f} — "
+                    f"{int(r['input_tokens']):,} in / "
+                    f"{int(r['output_tokens']):,} out / "
+                    f"{int(r['cached_tokens']):,} cached "
+                    f"({int(r['call_count'])} calls)"
+                )
+        else:
+            lines.append("\n  No usage recorded yet.")
+        return "\n".join(lines)
 
     def _help_text(self) -> str:
         return (
@@ -205,6 +241,7 @@ class TUI(App):
             "  [b]/live[/]       Toggle live audio visualizer (Ctrl+L)\n"
             "  [b]/clear[/]      Clear the conversation (Ctrl+K)\n"
             "  [b]/theme[/]      Toggle dark/light theme (Ctrl+D)\n"
+            "  [b]/cost[/]       Show LLM cost summary\n"
             "  [b]/help[/]       Show this help\n"
             "  [b]/quit[/]       Exit (Ctrl+C)"
         )

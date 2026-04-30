@@ -14,12 +14,13 @@ Exports:
 
 from __future__ import annotations
 
-from pprint import pprint
-from typing import Annotated, TypedDict, AsyncGenerator
 import asyncio
+from pprint import pprint
+from typing import Annotated, AsyncGenerator, TypedDict
 
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, AIMessageChunk
+from langchain_core.messages import (AIMessage, AIMessageChunk, HumanMessage,
+                                     SystemMessage)
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import create_react_agent
@@ -32,14 +33,15 @@ from src.states.main_state import MainState
 # Read-only file tools
 from src.tools.file_tools import (get_file_info, list_directory, read_file,
                                   search_content, search_files)
-
+# Memory tools
+from src.tools.memory_tools.daily_memory_tools import (add_to_daily_memory,
+                                                       read_daily_memory)
 # Scheduler tools
 from src.tools.scheduler_tools import (create_scheduled_task,
                                        delete_scheduled_task,
                                        list_scheduled_tasks,
                                        modify_scheduled_task,
                                        toggle_scheduled_task)
-
 # Safe system tools
 from src.tools.system_tools.safe_bash import safe_bash
 
@@ -84,7 +86,11 @@ CHAT_AGENT_TOOLS = [
     delete_scheduled_task,
     list_scheduled_tasks,
     modify_scheduled_task,
-    toggle_scheduled_task
+    toggle_scheduled_task,
+
+    # Memory tools
+    add_to_daily_memory,
+    read_daily_memory,
 ]
 
     
@@ -122,7 +128,6 @@ class ChatAgent:
             config=self.config,
         )
 
-        pprint(result)
         return result
 
     def stream(self, user_input):
