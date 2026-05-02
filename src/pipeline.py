@@ -16,8 +16,9 @@ from src.asr.asr_service import ASRService
 from src.config.logger import get_logger
 from src.config.settings import SETTINGS
 from src.scheduler.scheduler_manager import SchedulerManager
-from src.utils.text_utils import accumulate_sentences
+from src.utils.text_utils import accumulate_phrases, accumulate_sentences
 from src.voice import get_tts_engine  # noqa: E402
+from src.config.events import GlobalEvents, GlobalQueues
 
 logger = get_logger("pipeline")
 
@@ -31,9 +32,6 @@ class Pipeline:
     """Headless chat pipeline: queues in, callbacks out."""
 
     def __init__(self) -> None:
-        self._is_user_speaking = threading.Event()
-        self._llm_chunk_queue: queue.Queue = queue.Queue()
-        self._input_queue: queue.Queue = queue.Queue()
         self._stop_event = threading.Event()
 
         thread_id = str(uuid.uuid4())
@@ -44,12 +42,8 @@ class Pipeline:
         provider_name = SETTINGS.TTS_PROVIDER
         provider_config = SETTINGS.TTS_CONFIG.get(provider_name, {})
         self._tts = get_tts_engine(provider_name, provider_config)
-        self._tts.attach(
-            llm_chunk_queue=self._llm_chunk_queue,
-            is_user_speaking=self._is_user_speaking,
-        )
 
-        self._asr_service = ASRService(is_user_speaking=self._is_user_speaking)
+        self._asr_service = ASRService()
 
         self.scheduler = SchedulerManager()
         self.scheduler.attach_callback(self.submit)
@@ -79,7 +73,7 @@ class Pipeline:
     def submit(self, user_message: str) -> None:
         """Queue a user message for the LLM."""
         if user_message and user_message.strip():
-            self._input_queue.put(user_message.strip())
+            GlobalQueues.input_queue.put(user_message.strip())
 
     def start(self) -> None:
         self._spawn(self._consumer_loop, "pipeline-consumer")
@@ -102,35 +96,24 @@ class Pipeline:
         self._threads.append(t)
 
     def _drain_llm_queue(self) -> None:
-        while not self._llm_chunk_queue.empty():
+        while not GlobalQueues.llm_chunk_queue.empty():
             try:
-                self._llm_chunk_queue.get_nowait()
+                GlobalQueues.llm_chunk_queue.get_nowait()
             except queue.Empty:
                 break
 
     def _consumer_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
-                user_message = self._input_queue.get(timeout=0.25)
+                user_message = GlobalQueues.input_queue.get(timeout=0.25)
             except queue.Empty:
                 continue
+            print("Received message in consumer loop: ", user_message)
             self._handle_turn(user_message)
 
 
     def _handle_turn(self, user_message: str) -> None:
         """The main function responsible for handling the turns and sending response to the LLM."""
-        def tee():
-            for token in self._chat_agent.stream(user_message):
-                if self._is_user_speaking.is_set():
-                    logger.debug("Barge-in — aborting LLM stream")
-                    self._drain_llm_queue()
-                    return
-                if self._on_chunk:
-                    try:
-                        self._on_chunk(token)
-                    except Exception:
-                        logger.exception("on_chunk callback failed")
-                yield token
 
         # Drain the queue before starting the new turn
         self._drain_llm_queue()
@@ -145,14 +128,16 @@ class Pipeline:
         # Main loop for handling the llm output
         llm_chunk_generator = self._chat_agent.stream(user_message)
         for sentence in accumulate_sentences(llm_chunk_generator):
-            if self._is_user_speaking.is_set():
+            print("llm chunk: ", sentence)
+            if GlobalEvents.is_user_speaking():
                 logger.debug("Barge-in — aborting LLM stream")
                 self._drain_llm_queue()
                 return
 
             # Pass the token to the LLM chunk queue for TTS processing
             if SETTINGS.IS_TTS_ENABLED:
-                self._llm_chunk_queue.put(sentence)
+                print("sent to tts queue: ", sentence)
+                GlobalQueues.llm_chunk_queue.put(sentence)
 
             # Pass the token to the TUI for display
             if self._on_chunk:
@@ -177,7 +162,7 @@ class Pipeline:
                 full_text += text_chunk
 
             # Check if the user is speaking and if there is any text to process
-            if not self._is_user_speaking.is_set() and full_text.strip():
+            if not GlobalEvents.is_user_speaking() and full_text.strip():
                 msg = full_text.strip()
                 full_text = ""
 
@@ -189,3 +174,4 @@ class Pipeline:
                         logger.exception("on_user_msg callback failed")
 
                 self.submit(msg)
+                print("sent to llm", msg)

@@ -1,8 +1,9 @@
 {
   "LOG_MODE": "file",
   "NAME": "DJ",
+  "MODELS_DIR": "models",
   "TTS_PROVIDER": "kokoro",
-  "IS_ASR_ENABLED": "false",
+  "IS_ASR_ENABLED": "true",
   "IS_TTS_ENABLED": "true",
   "daily_budget_usd": 0,
   "TTS_CONFIG": {
