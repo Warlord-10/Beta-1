@@ -131,42 +131,44 @@ class KokoroTTS(BaseTTS):
         Thread entry-point.
         Pulls sentences from llm_chunk_queue ──► synthesizes ──► audio_queue.
         """
-        
-        with sd.OutputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype="float32",
-            callback=self._callback,
-        ):
-            while True:
-                # Barge-in: user started speaking mid-playback
-                if GlobalEvents.is_user_speaking():
-                    self._flush_audio_queue()
-                    time.sleep(0.05)
-                    continue
+        while True:
+            GlobalEvents.is_tts_enabled_event.wait()
+            
+            with sd.OutputStream(
+                samplerate=self.sample_rate,
+                channels=1,
+                dtype="float32",
+                callback=self._callback,
+            ):
+                while GlobalEvents.is_tts_enabled():
+                    # Barge-in: user started speaking mid-playback
+                    if GlobalEvents.is_user_speaking():
+                        self._flush_audio_queue()
+                        time.sleep(0.05)
+                        continue
 
-                try:
-                    llm_chunk = GlobalQueues.llm_chunk_queue.get(timeout=0.05)
-                    print("Received message in tts loop: ", llm_chunk, time.time())
-                except queue.Empty:
-                    continue
+                    try:
+                        llm_chunk = GlobalQueues.llm_chunk_queue.get(timeout=0.05)
+                        print("Received message in tts loop: ", llm_chunk, time.time())
+                    except queue.Empty:
+                        continue
 
-                # Shutdown sentinel
-                if llm_chunk is None:
-                    logger.info("TTS received shutdown sentinel")
-                    GlobalQueues.audio_chunk_queue.put(_SHUTDOWN)
-                    break
+                    # Shutdown sentinel
+                    if llm_chunk is None:
+                        logger.info("TTS received shutdown sentinel")
+                        GlobalQueues.audio_chunk_queue.put(_SHUTDOWN)
+                        break
 
-                logger.debug("TTS received chunk: %r", llm_chunk[:40])
-                self.synthesize(llm_chunk)
+                    logger.debug("TTS received chunk: %r", llm_chunk[:40])
+                    self.synthesize(llm_chunk)
 
-                # for audio_chunk in self.synthesize(llm_chunk):
-                #     print("audio chunk processed from tts:", time.time())
-                #     # Check barge-in during synthesis too
-                #     if self._check_user_speaking():
-                #         logger.debug("Barge-in during synthesis — discarding")
-                #         break
-                #     self._audio_queue.put(audio_chunk)  # blocks if full → backpressure
+                    # for audio_chunk in self.synthesize(llm_chunk):
+                    #     print("audio chunk processed from tts:", time.time())
+                    #     # Check barge-in during synthesis too
+                    #     if self._check_user_speaking():
+                    #         logger.debug("Barge-in during synthesis — discarding")
+                    #         break
+                    #     self._audio_queue.put(audio_chunk)  # blocks if full → backpressure
 
     def shutdown(self) -> None:
         GlobalQueues.llm_chunk_queue.put(None)

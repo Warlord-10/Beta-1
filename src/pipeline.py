@@ -76,11 +76,12 @@ class Pipeline:
             GlobalQueues.input_queue.put(user_message.strip())
 
     def start(self) -> None:
+        GlobalEvents.set_asr_enabled(True)
+        GlobalEvents.set_tts_enabled(True)
+        
         self._spawn(self._consumer_loop, "pipeline-consumer")
-        if SETTINGS.IS_ASR_ENABLED == "true":
-            self._spawn(self._asr_loop, "asr-worker")
-        if SETTINGS.IS_TTS_ENABLED == "true":
-            self._spawn(self._tts.stream, "tts-worker")
+        self._spawn(self._asr_loop, "asr-worker")
+        self._spawn(self._tts.stream, "tts-worker")
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -135,7 +136,7 @@ class Pipeline:
                 return
 
             # Pass the token to the LLM chunk queue for TTS processing
-            if SETTINGS.IS_TTS_ENABLED:
+            if GlobalEvents.is_tts_enabled():
                 print("sent to tts queue: ", sentence)
                 GlobalQueues.llm_chunk_queue.put(sentence)
 
