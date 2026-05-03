@@ -14,7 +14,7 @@ from src.asr.factory import get_asr_engine
 from src.asr.vad import VoiceActivityDetector
 from src.config.logger import get_logger
 from src.config.events import GlobalEvents
-from src.asr.aec import ap
+from src.asr.aec import aec
 
 logger = get_logger("asr.stream")
 
@@ -23,7 +23,7 @@ class ASRService:
     def __init__(
         self,
         sample_rate: int = 16000,
-        chunk_duration_ms: int = 250,
+        chunk_duration_ms: int = 10,
         max_silence_chunks: int = 6,
     ):
         self.sample_rate = sample_rate
@@ -60,7 +60,8 @@ class ASRService:
     def _audio_callback(self, indata, frames, time_info, status):
         if status:
             logger.warning("Audio stream status: %s", status)
-        self._audio_queue.put(indata[:, 0].copy())
+        chunk_for_aec = indata[:, 0].copy()
+        self._audio_queue.put(aec.process_mic(chunk_for_aec))
 
     def _reset_silence_chunks(self):
         self._silence_chunks = 0
@@ -88,7 +89,7 @@ class ASRService:
             ):
 
                 current_speech_chunk = 0
-                # vad_buffer = []
+                vad_buffer = []
 
                 while GlobalEvents.is_asr_enabled():
                     try:
@@ -100,12 +101,12 @@ class ASRService:
                     if chunk is None:
                         break
 
-                    # vad_buffer.append(chunk)
-                    # if len(vad_buffer) < 25:
-                    #     continue
-                    
-                    # chunk = np.concatenate(vad_buffer)
-                    # vad_buffer.clear()
+                    vad_buffer.append(chunk)
+                    if len(vad_buffer) < 25:
+                        continue
+
+                    chunk = np.concatenate(vad_buffer)
+                    vad_buffer.clear()
 
                     is_speech = self._is_speech(chunk)
                     self._speech_buffer.append(chunk)
@@ -118,7 +119,7 @@ class ASRService:
                         self._silence_chunks += 1
 
                     # Partial transcription on short silence — user still speaking
-                    if self._silence_chunks == 2 and len(self._speech_buffer) > 0 and current_speech_chunk > 0:
+                    if self._silence_chunks == 2 and current_speech_chunk > 0:
                         current_speech_chunk = 0
                         yield self._yield_transcript()
 
