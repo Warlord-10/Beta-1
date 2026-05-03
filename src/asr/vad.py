@@ -31,6 +31,7 @@ class VoiceActivityDetector:
                 self.model, 
                 threshold=self.threshold,
                 sampling_rate=sample_rate,
+                min_speech_duration_ms=50,
                 return_seconds=False
             )
             return len(timestamps) > 0

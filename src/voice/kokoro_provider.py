@@ -14,6 +14,7 @@ from src.config.logger import get_logger
 from src.utils.text_utils import clean_text
 from src.voice.base import BaseTTS
 from src.config.events import GlobalEvents, GlobalQueues
+from src.asr.aec import aec
 
 logger = get_logger("voice.kokoro")
 
@@ -81,6 +82,9 @@ class KokoroTTS(BaseTTS):
             outdata[len(result) :] = 0
             self._leftover = np.array([], dtype="float32")
 
+        chunk_for_aec = outdata[:, 0].copy()
+        aec.push_speaker(chunk_for_aec)
+
     def _flush_audio_queue(self) -> None:
         """Discard buffered audio when user starts speaking (barge-in)."""
         flushed = 0
@@ -93,6 +97,7 @@ class KokoroTTS(BaseTTS):
         if flushed:
             logger.debug("Flushed %d audio chunks on barge-in", flushed)
         self._leftover = np.array([], dtype="float32")
+        aec.reset_reference()
 
     def synthesize(self, text: str) -> Iterator[np.ndarray]:
         """
@@ -138,7 +143,9 @@ class KokoroTTS(BaseTTS):
                 samplerate=self.sample_rate,
                 channels=1,
                 dtype="float32",
+                blocksize=240,  # 10 ms @ 24 kHz — one AEC reference frame per callback
                 callback=self._callback,
+                latency="high",
             ):
                 while GlobalEvents.is_tts_enabled():
                     # Barge-in: user started speaking mid-playback
