@@ -16,7 +16,7 @@ from src.asr.asr_service import ASRService
 from src.config.logger import get_logger
 from src.config.settings import SETTINGS
 from src.scheduler.scheduler_manager import SchedulerManager
-from src.utils.text_utils import accumulate_phrases, accumulate_sentences
+from src.utils.text_utils import accumulate_phrases, accumulate_sentences, clean_text
 from src.voice import get_tts_engine  # noqa: E402
 from src.config.events import GlobalEvents, GlobalQueues
 
@@ -160,11 +160,11 @@ class Pipeline:
         full_text = ""
         for text_chunk in self._asr_service.stream():
             if text_chunk:
-                full_text += text_chunk
+                full_text += f" {text_chunk}"
 
             # Check if the user is speaking and if there is any text to process
             if not GlobalEvents.is_user_speaking() and full_text.strip():
-                msg = full_text.strip()
+                msg = clean_text(full_text)
                 full_text = ""
 
                 # Signal the user input to the TUI

@@ -14,6 +14,7 @@ from src.asr.factory import get_asr_engine
 from src.asr.vad import VoiceActivityDetector
 from src.config.logger import get_logger
 from src.config.events import GlobalEvents
+from src.asr.aec import ap
 
 logger = get_logger("asr.stream")
 
@@ -22,7 +23,7 @@ class ASRService:
     def __init__(
         self,
         sample_rate: int = 16000,
-        chunk_duration_ms: int = 500,
+        chunk_duration_ms: int = 250,
         max_silence_chunks: int = 6,
     ):
         self.sample_rate = sample_rate
@@ -87,6 +88,8 @@ class ASRService:
             ):
 
                 current_speech_chunk = 0
+                # vad_buffer = []
+
                 while GlobalEvents.is_asr_enabled():
                     try:
                         chunk = self._audio_queue.get()
@@ -97,7 +100,13 @@ class ASRService:
                     if chunk is None:
                         break
 
-                    # chunk = self.noise_suppressor.process(chunk, self.sample_rate)
+                    # vad_buffer.append(chunk)
+                    # if len(vad_buffer) < 25:
+                    #     continue
+                    
+                    # chunk = np.concatenate(vad_buffer)
+                    # vad_buffer.clear()
+
                     is_speech = self._is_speech(chunk)
                     self._speech_buffer.append(chunk)
 

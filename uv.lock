@@ -16,6 +16,16 @@ wheels = [
 ]
 
 [[package]]
+name = "aec-audio-processing"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9e/f1/d4c91eeaed6a2d91b448eb3eb17c150a505973aa7c5495d8772325918e38/aec_audio_processing-1.0.1.tar.gz", hash = "sha256:f03a3ce3f45bf15a04a8504d0f692a651180ca2d3171bd9f3de0516e5f2b8360", size = 5897164, upload-time = "2025-09-01T13:13:16.718Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/36/4f/13a1dfdde223744a65efd17e3d3f322286e4f5220b7f3d1eb54c776930f1/aec_audio_processing-1.0.1-cp312-cp312-win_amd64.whl", hash = "sha256:158946224289773ed9101aaf4acedddb8eaed442f94809ffd7fb4778e4c65f47", size = 920835, upload-time = "2025-09-01T13:13:12.087Z" },
+    { url = "https://files.pythonhosted.org/packages/11/b0/96a1bdb897a4aff9d21efa2f805a5ba2e9cba99945e855045719105a3513/aec_audio_processing-1.0.1-cp313-cp313-win_amd64.whl", hash = "sha256:25502a35a08a55650d926b0280199118af42e6405cda177039fa5ad04d24671e", size = 920835, upload-time = "2025-09-01T13:13:13.698Z" },
+]
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -294,6 +304,7 @@ name = "beta-1"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "aec-audio-processing" },
     { name = "apscheduler" },
     { name = "dotenv" },
     { name = "faster-whisper" },
@@ -309,6 +320,8 @@ dependencies = [
     { name = "langgraph" },
     { name = "mlx-whisper" },
     { name = "numpy" },
+    { name = "pyaec" },
+    { name = "scipy" },
     { name = "silero-vad" },
     { name = "sounddevice" },
     { name = "soundfile" },
@@ -320,6 +333,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aec-audio-processing", specifier = ">=1.0.1" },
     { name = "apscheduler", specifier = ">=3.10" },
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "faster-whisper" },
@@ -335,6 +349,8 @@ requires-dist = [
     { name = "langgraph", specifier = ">=1.0.8" },
     { name = "mlx-whisper" },
     { name = "numpy", specifier = ">=1.26.0" },
+    { name = "pyaec", specifier = ">=1.0.1" },
+    { name = "scipy", specifier = ">=1.17.1" },
     { name = "silero-vad" },
     { name = "sounddevice", specifier = ">=0.4.6" },
     { name = "soundfile" },
@@ -2579,6 +2595,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/85/29/64de04a0ac142fb685fd09999bc3d337943fb386f3a0ec57f92fd8203f97/protobuf-7.34.1-cp310-abi3-win32.whl", hash = "sha256:34b84ce27680df7cca9f231043ada0daa55d0c44a2ddfaa58ec1d0d89d8bf60a", size = 426628, upload-time = "2026-03-20T17:34:42.536Z" },
     { url = "https://files.pythonhosted.org/packages/4d/87/cb5e585192a22b8bd457df5a2c16a75ea0db9674c3a0a39fc9347d84e075/protobuf-7.34.1-cp310-abi3-win_amd64.whl", hash = "sha256:e97b55646e6ce5cbb0954a8c28cd39a5869b59090dfaa7df4598a7fba869468c", size = 437901, upload-time = "2026-03-20T17:34:44.112Z" },
     { url = "https://files.pythonhosted.org/packages/88/95/608f665226bca68b736b79e457fded9a2a38c4f4379a4a7614303d9db3bc/protobuf-7.34.1-py3-none-any.whl", hash = "sha256:bb3812cd53aefea2b028ef42bd780f5b96407247f20c6ef7c679807e9d188f11", size = 170715, upload-time = "2026-03-20T17:34:45.384Z" },
+]
+
+[[package]]
+name = "pyaec"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ed/65/ebf6ce37c5a4d1d68174111eef2c3713e813f82a6536ddf1801669d6f65f/pyaec-1.0.1-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:c8de8202f01224094cfe3f2b19af477ee9e795ea70b2d9042f633ede46ec4622", size = 204629, upload-time = "2024-12-08T07:49:39.672Z" },
+    { url = "https://files.pythonhosted.org/packages/40/22/f79e36d60c871ade5239d8b35e883ffd7f9665c5cd159f01358d3cc64bd0/pyaec-1.0.1-py3-none-macosx_11_0_arm64.whl", hash = "sha256:d10a3e2332e32c1b4f93da51462b3957321b2b554cb2f981bd2614e76f4bfd75", size = 194362, upload-time = "2024-12-08T07:49:37.059Z" },
+    { url = "https://files.pythonhosted.org/packages/77/f1/dbd418412018c6ecf768f211e30644cb99276ea6455c70fddafdb8444906/pyaec-1.0.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c5634c753896cfd3c4fe1d8e20e6a5bc1839acb03c659c79d40ec5de84657068", size = 236738, upload-time = "2024-12-08T07:49:38.85Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/8b/e999331764587854f0372151588a8fce961466c8114e2e42b625cd9dcd72/pyaec-1.0.1-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:04ca37f176c057c0607bf72e1dee5bf65c6978e655ff528380364b7facaaa674", size = 230118, upload-time = "2024-12-08T07:49:39.141Z" },
+    { url = "https://files.pythonhosted.org/packages/67/91/96a00471a8e9bb1d0228e47a48039f2b36df962a78a531f64edbc10ea6df/pyaec-1.0.1-py3-none-win_amd64.whl", hash = "sha256:b33fbe0dde1ef686d3036b8b1d594e8a9843a1ec57826841af0b916ef86982b6", size = 82832, upload-time = "2024-12-08T07:50:05.12Z" },
+    { url = "https://files.pythonhosted.org/packages/3d/93/3e16353d060d5a25b0c520724b5f4abae1ab7883aa0583066a68eb9632aa/pyaec-1.0.1-py3-none-win_arm64.whl", hash = "sha256:795aff2946fa575076fd38d8818e21addc53a5bee31ad66e9791773f73dfcec0", size = 80684, upload-time = "2024-12-08T07:50:12.073Z" },
 ]
 
 [[package]]

@@ -17,11 +17,15 @@ from src.pipeline import Pipeline
 def main() -> None:
     pipeline = Pipeline()
     pipeline.start()
-    try:
-        TUI(pipeline=pipeline).run()
-    finally:
-        pipeline.stop()
-    threading.Event().wait()
+
+    s = input("Wants GUI? (y/n): ")
+    if s.lower() == 'y':
+        try:
+            TUI(pipeline=pipeline).run()
+        finally:
+            pipeline.stop()
+    else:
+        threading.Event().wait()
 
 
 if __name__ == "__main__":

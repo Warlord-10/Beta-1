@@ -139,6 +139,7 @@ class KokoroTTS(BaseTTS):
                 channels=1,
                 dtype="float32",
                 callback=self._callback,
+                latency="high",
             ):
                 while GlobalEvents.is_tts_enabled():
                     # Barge-in: user started speaking mid-playback
