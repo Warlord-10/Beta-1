@@ -13,6 +13,7 @@ from kokoro import KPipeline
 from src.config.logger import get_logger
 from src.utils.text_utils import clean_text
 from src.voice.base import BaseTTS
+from src.config.events import GlobalEvents, GlobalQueues
 
 logger = get_logger("voice.kokoro")
 
@@ -21,14 +22,6 @@ _SHUTDOWN = object()
 
 
 class KokoroTTS(BaseTTS):
-    """
-    Kokoro TTS integration.
-
-    Responsibilities:
-      - synthesize()  : text  ──► numpy audio chunks (generator)
-      - stream()      : pulls from llm_chunk_queue, feeds audio_queue
-      - _callback()   : sounddevice callback, drains audio_queue into DAC
-    """
 
     def __init__(
         self,
@@ -40,34 +33,27 @@ class KokoroTTS(BaseTTS):
         self.voice_name = voice_name
         self.speed = speed
 
-        # Injected via attach() — not owned by TTS
-        self._llm_chunk_queue: Optional[queue.Queue] = None
-        self._is_user_speaking: Optional[threading.Event] = None
-
         # Internal audio pipeline
-        self._audio_queue: queue.Queue = queue.Queue(maxsize=20)
         self._leftover = np.array([], dtype="float32")
 
         lang_code = voice_name[0] if voice_name else "a"
         logger.info("Initializing Kokoro TTS (lang=%s, voice=%s)", lang_code, voice_name)
-        self.pipeline = KPipeline(lang_code=lang_code)
+        self.pipeline = KPipeline(lang_code=lang_code, repo_id="hexgrad/Kokoro-82M")
+        self._warmup()
         logger.info("Kokoro TTS ready")
 
-    def attach(
-        self,
-        llm_chunk_queue: queue.Queue,
-        is_user_speaking: threading.Event,
-    ) -> None:
-        """Inject runtime dependencies. Call before stream()."""
-        self._llm_chunk_queue = llm_chunk_queue
-        self._is_user_speaking = is_user_speaking
-
-    
-    def _check_user_speaking(self) -> bool:
-        if self._is_user_speaking and self._is_user_speaking.is_set():
-            return True
-        return False
-
+    def _warmup(self) -> None:
+        """Force voice tensor load + first-call graph build at startup."""
+        try:
+            for _ in self.pipeline(
+                "warmup.",
+                voice=self.voice_name,
+                speed=self.speed,
+                split_pattern=r"\n+",
+            ):
+                pass
+        except Exception:
+            logger.exception("Kokoro warmup failed")
 
     def _callback(self, outdata: np.ndarray, frames: int, time_info, status) -> None:
         if status:
@@ -79,12 +65,12 @@ class KokoroTTS(BaseTTS):
         # Drain audio_queue without blocking — pad with silence if needed
         while len(result) < needed:
             try:
-                chunk = self._audio_queue.get_nowait()
+                chunk = GlobalQueues.audio_chunk_queue.get_nowait()
                 if chunk is _SHUTDOWN:
                     break
                 result = np.concatenate([result, chunk])
             except queue.Empty:
-                break  # not enough audio ready — will pad below
+                break
 
         if len(result) >= needed:
             outdata[:] = result[:needed].reshape(-1, 1)
@@ -95,35 +81,12 @@ class KokoroTTS(BaseTTS):
             outdata[len(result) :] = 0
             self._leftover = np.array([], dtype="float32")
 
-
-    def synthesize(self, text: str) -> Iterator[np.ndarray]:
-        """
-        Yields numpy audio chunks for the given text.
-        This is a generator — iterate it, don't call it like a function.
-        """
-        text = clean_text(text)
-        if not text.strip():
-            return
-
-        try:
-            logger.debug("Synthesizing: %r", text[:60])
-            for _gs, _ps, audio in self.pipeline(
-                text,
-                voice=self.voice_name,
-                speed=self.speed,
-                split_pattern=r"\n+",
-            ):
-                yield audio
-        except Exception:
-            logger.exception("Kokoro synthesis failed for: %r", text[:60])
-
-
     def _flush_audio_queue(self) -> None:
         """Discard buffered audio when user starts speaking (barge-in)."""
         flushed = 0
-        while not self._audio_queue.empty():
+        while not GlobalQueues.audio_chunk_queue.empty():
             try:
-                self._audio_queue.get_nowait()
+                GlobalQueues.audio_chunk_queue.get_nowait()
                 flushed += 1
             except queue.Empty:
                 break
@@ -131,48 +94,84 @@ class KokoroTTS(BaseTTS):
             logger.debug("Flushed %d audio chunks on barge-in", flushed)
         self._leftover = np.array([], dtype="float32")
 
+    def synthesize(self, text: str) -> Iterator[np.ndarray]:
+        """
+        Yields numpy audio chunks for the given text.
+        This is a generator — iterate it, don't call it like a function.
+        """
+
+        text = clean_text(text)
+        if not text.strip():
+            return
+
+        print("i will now create the audio from text: ", text, time.time())
+
+        try:
+            logger.debug("Synthesizing: %r", text[:60])
+            for _gs, _ps, audio in self.pipeline(
+                text,
+                voice=self.voice_name,
+                speed=self.speed,
+                split_pattern=r'\n+',
+            ):
+                print("audio chunk processed from tts: ", _gs, time.time())
+
+                # Check barge-in while streaming audio
+                if GlobalEvents.is_user_speaking():
+                    self._flush_audio_queue()
+                    return
+
+                GlobalQueues.audio_chunk_queue.put(audio)
+
+        except Exception:
+            logger.exception("Kokoro synthesis failed for: %r", text[:60])
+
     def stream(self) -> None:
         """
         Thread entry-point.
         Pulls sentences from llm_chunk_queue ──► synthesizes ──► audio_queue.
         """
-        assert self._llm_chunk_queue is not None, "Call attach() before stream()"
+        while True:
+            GlobalEvents.is_tts_enabled_event.wait()
+            
+            with sd.OutputStream(
+                samplerate=self.sample_rate,
+                channels=1,
+                dtype="float32",
+                callback=self._callback,
+            ):
+                while GlobalEvents.is_tts_enabled():
+                    # Barge-in: user started speaking mid-playback
+                    if GlobalEvents.is_user_speaking():
+                        self._flush_audio_queue()
+                        time.sleep(0.05)
+                        continue
 
-        with sd.OutputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype="float32",
-            callback=self._callback,
-        ):
-            while True:
-                # Barge-in: user started speaking mid-playback
-                if self._check_user_speaking():
-                    self._flush_audio_queue()
-                    time.sleep(0.05)
-                    continue
+                    try:
+                        llm_chunk = GlobalQueues.llm_chunk_queue.get(timeout=0.05)
+                        print("Received message in tts loop: ", llm_chunk, time.time())
+                    except queue.Empty:
+                        continue
 
-                try:
-                    llm_chunk = self._llm_chunk_queue.get(timeout=0.05)
-                except queue.Empty:
-                    continue
-
-                # Shutdown sentinel
-                if llm_chunk is None:
-                    logger.info("TTS received shutdown sentinel")
-                    self._audio_queue.put(_SHUTDOWN)
-                    break
-
-                logger.debug("TTS received chunk: %r", llm_chunk[:40])
-                for audio_chunk in self.synthesize(llm_chunk):
-                    # Check barge-in during synthesis too
-                    if self._check_user_speaking():
-                        logger.debug("Barge-in during synthesis — discarding")
+                    # Shutdown sentinel
+                    if llm_chunk is None:
+                        logger.info("TTS received shutdown sentinel")
+                        GlobalQueues.audio_chunk_queue.put(_SHUTDOWN)
                         break
-                    self._audio_queue.put(audio_chunk)  # blocks if full → backpressure
+
+                    logger.debug("TTS received chunk: %r", llm_chunk[:40])
+                    self.synthesize(llm_chunk)
+
+                    # for audio_chunk in self.synthesize(llm_chunk):
+                    #     print("audio chunk processed from tts:", time.time())
+                    #     # Check barge-in during synthesis too
+                    #     if self._check_user_speaking():
+                    #         logger.debug("Barge-in during synthesis — discarding")
+                    #         break
+                    #     self._audio_queue.put(audio_chunk)  # blocks if full → backpressure
 
     def shutdown(self) -> None:
-        if self._llm_chunk_queue:
-            self._llm_chunk_queue.put(None)
+        GlobalQueues.llm_chunk_queue.put(None)
 
     def play(self):
         pass

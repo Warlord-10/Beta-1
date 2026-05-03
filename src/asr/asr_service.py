@@ -13,6 +13,7 @@ from src.asr.factory import get_asr_engine
 # from src.asr.noise_suppressor import NoiseSuppressor
 from src.asr.vad import VoiceActivityDetector
 from src.config.logger import get_logger
+from src.config.events import GlobalEvents
 
 logger = get_logger("asr.stream")
 
@@ -20,7 +21,6 @@ logger = get_logger("asr.stream")
 class ASRService:
     def __init__(
         self,
-        is_user_speaking: threading.Event = None,
         sample_rate: int = 16000,
         chunk_duration_ms: int = 500,
         max_silence_chunks: int = 6,
@@ -33,7 +33,6 @@ class ASRService:
         self.vad = VoiceActivityDetector(threshold=0.7)
         self.asr = get_asr_engine()
 
-        self.is_user_speaking = is_user_speaking
         self._audio_queue: queue.Queue = queue.Queue()
         self._speech_buffer: list = []
         self._silence_chunks: int = 0
@@ -62,13 +61,8 @@ class ASRService:
             logger.warning("Audio stream status: %s", status)
         self._audio_queue.put(indata[:, 0].copy())
 
-    def _set_speaking(self, speaking: bool) -> None:
-        if self.is_user_speaking is None:
-            return
-        if speaking:
-            self.is_user_speaking.set()
-        else:
-            self.is_user_speaking.clear()
+    def _reset_silence_chunks(self):
+        self._silence_chunks = 0
 
 
     def stream(self):
@@ -81,51 +75,50 @@ class ASRService:
         self._speech_buffer.clear()
         self._silence_chunks = 0
 
-        with sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            blocksize=self.chunk_size,
-            callback=self._audio_callback,
-        ):
+        while True:
+            GlobalEvents.is_asr_enabled_event.wait()
 
-            current_speech_chunk = 0
-            while True:
-                try:
-                    chunk = self._audio_queue.get(timeout=1.0)
-                except queue.Empty:
-                    continue
+            with sd.InputStream(
+                samplerate=self.sample_rate,
+                channels=1,
+                blocksize=self.chunk_size,
+                latency="high",
+                callback=self._audio_callback,
+            ):
 
-                # Shutdown sentinel
-                if chunk is None:
-                    break
+                current_speech_chunk = 0
+                while GlobalEvents.is_asr_enabled():
+                    try:
+                        chunk = self._audio_queue.get()
+                    except queue.Empty:
+                        continue
 
-                # chunk = self.noise_suppressor.process(chunk, self.sample_rate)
-                is_speech = self._is_speech(chunk)
-                self._speech_buffer.append(chunk)
+                    # Shutdown sentinel
+                    if chunk is None:
+                        break
 
-                if is_speech:
-                    self._silence_chunks = 0
-                    current_speech_chunk += 1
-                    self._set_speaking(True)
-                    print("Speech detected")
-                else:
-                    self._silence_chunks += 1
-                    print("Silence gap: %d", self._silence_chunks)
+                    # chunk = self.noise_suppressor.process(chunk, self.sample_rate)
+                    is_speech = self._is_speech(chunk)
+                    self._speech_buffer.append(chunk)
 
-                # Partial transcription on short silence — user still speaking
-                if self._silence_chunks == 2 and len(self._speech_buffer) > 0 and current_speech_chunk > 0:
-                    current_speech_chunk = 0
-                    yield self._yield_transcript()
+                    if is_speech:
+                        GlobalEvents.set_user_speaking(True)
+                        self._reset_silence_chunks()
+                        current_speech_chunk += 1
+                    else:
+                        self._silence_chunks += 1
 
-                # End of utterance — clear event AFTER yielding final chunk
-                if self._silence_chunks >= self.max_silence_chunks:
-                    self._silence_chunks = 0
-                    current_speech_chunk = 0
-
-                    # Flush any remaining audio
-                    if self._speech_buffer:
+                    # Partial transcription on short silence — user still speaking
+                    if self._silence_chunks == 2 and len(self._speech_buffer) > 0 and current_speech_chunk > 0:
+                        current_speech_chunk = 0
                         yield self._yield_transcript()
 
-                    # Only now signal that the user has stopped speaking
-                    self._set_speaking(False)
-                    print("End of utterance")
+                    # End of utterance — clear event AFTER yielding final chunk
+                    if self._silence_chunks >= self.max_silence_chunks:
+                        self._reset_silence_chunks()
+                        current_speech_chunk = 0
+
+                        # Flush any remaining audio
+                        self._speech_buffer.clear()
+                        GlobalEvents.set_user_speaking(False)
+                        yield " "

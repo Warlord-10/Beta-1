@@ -25,49 +25,60 @@ except Exception:  # pragma: no cover
 # Chat message bubble
 # =============================================================================
 class ChatMessage(Horizontal):
-    """A single message bubble aligned to the correct side, 50% wide."""
+    """A single terminal-style message line. No borders, no padding."""
 
     DEFAULT_CSS = """
     ChatMessage {
         height: auto;
         width: 100%;
-        margin: 0 0 1 0;
+        margin: 0;
         padding: 0;
-    }
-    ChatMessage.-user {
-        align-horizontal: right;
-    }
-    ChatMessage.-bot {
-        align-horizontal: left;
     }
     ChatMessage > .bubble {
         height: auto;
-        padding: 1;
+        width: 1fr;
+        padding: 0;
+        margin: 0;
     }
     ChatMessage.-user > .bubble {
-        width: 70%;
-        border: round $primary;
-        color: green;
+        color: $success;
     }
     ChatMessage.-bot > .bubble {
-        border: round $success;
-        color: blue;
+        color: $text;
     }
     """
 
-    def __init__(self, text: str, is_user: bool = False) -> None:
+    def __init__(self, text: str = "", is_user: bool = False) -> None:
         super().__init__()
-        self._text = text
         self._is_user = is_user
         self._ts = datetime.now().strftime("%H:%M")
+        self._text = text
         self.add_class("-user" if is_user else "-bot")
+        self._static: Optional[Static] = None
+
+    def _prefix(self) -> str:
+        if self._is_user:
+            return f"[dim]{self._ts}[/dim] [bold green]❯[/] "
+        return f"[dim]{self._ts}[/dim] [bold cyan]✦[/] "
 
     def compose(self) -> ComposeResult:
-        if self._is_user:
-            header = f"[bold]👤 You[/]  [dim]· {self._ts}[/dim]"
-        else:
-            header = f"[bold]✨ Assistant[/]  [dim]· {self._ts}[/dim]"
-        yield Static(f"{self._text}", classes="bubble", markup=True)
+        self._static = Static(
+            f"{self._prefix()}{self._text}",
+            classes="bubble",
+            markup=True,
+        )
+        yield self._static
+
+    def append(self, chunk: str) -> None:
+        """Append a streamed chunk and re-render."""
+        self._text += chunk
+        if self._static is not None:
+            self._static.update(f"{self._prefix()}{self._text}")
+
+    def set_text(self, text: str) -> None:
+        self._text = text
+        if self._static is not None:
+            self._static.update(f"{self._prefix()}{self._text}")
 
 
 # =============================================================================
