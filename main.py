@@ -15,10 +15,11 @@ from src.pipeline import Pipeline
 
 
 def main() -> None:
+    s = input("Wants GUI? (y/n): ")
+
     pipeline = Pipeline()
     pipeline.start()
 
-    s = input("Wants GUI? (y/n): ")
     if s.lower() == 'y':
         try:
             TUI(pipeline=pipeline).run()
@@ -26,7 +27,6 @@ def main() -> None:
             pipeline.stop()
     else:
         threading.Event().wait()
-
 
 if __name__ == "__main__":
     main()

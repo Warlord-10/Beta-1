@@ -6,6 +6,7 @@ any frontend (TUI, CLI, web) can drive it without knowing the internals.
 
 from __future__ import annotations
 
+import asyncio
 import queue
 import threading
 import uuid
@@ -16,7 +17,7 @@ from src.asr.asr_service import ASRService
 from src.config.logger import get_logger
 from src.config.settings import SETTINGS
 from src.scheduler.scheduler_manager import SchedulerManager
-from src.utils.text_utils import accumulate_phrases, accumulate_sentences, clean_text
+from src.utils.text_utils import accumulate_phrases, accumulate_sentences, clean_text, accumulate_sentences_async
 from src.voice import get_tts_engine  # noqa: E402
 from src.config.events import GlobalEvents, GlobalQueues
 
@@ -26,6 +27,9 @@ OnChunk = Callable[[str], None]
 OnTurnStart = Callable[[], None]
 OnTurnEnd = Callable[[], None]
 OnUserMessage = Callable[[str], None]
+
+def dummy_enqueue_result(text):
+    print("[DUMMY RESPONSE]", text)
 
 
 class Pipeline:
@@ -112,7 +116,6 @@ class Pipeline:
             print("Received message in consumer loop: ", user_message)
             self._handle_turn(user_message)
 
-
     def _handle_turn(self, user_message: str) -> None:
         """The main function responsible for handling the turns and sending response to the LLM."""
 
@@ -176,3 +179,62 @@ class Pipeline:
 
                 self.submit(msg)
                 print("sent to llm", msg)
+
+
+    # Asynchronous version of the consumer loop
+    async def async_start(self) -> None:
+        GlobalEvents.set_asr_enabled(True)
+        GlobalEvents.set_tts_enabled(True)
+        
+        self._spawn(self._asr_loop, "asr-worker")
+        self._spawn(self._tts.stream, "tts-worker")
+        await self.async_consumer_loop()
+
+    async def async_consumer_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                user_message = GlobalQueues.input_queue.get(timeout=0.25)
+            except queue.Empty:
+                await asyncio.sleep(0.1)
+                continue
+            print("Received message in consumer loop: ", user_message)
+            await self.async_handle_turn(user_message)
+
+    async def async_handle_turn(self, user_message: str) -> None:
+        # Drain the queue before starting the new turn
+        self._drain_llm_queue()
+
+        # Signal the start of a new turn to the TUI
+        if self._on_turn_start:
+            try:
+                self._on_turn_start()
+            except Exception:
+                logger.exception("on_turn_start callback failed")
+
+        # Main loop for handling the llm output
+        llm_chunk_generator = self._chat_agent.astream(user_message)
+        async for sentence in accumulate_sentences_async(llm_chunk_generator):
+            print("llm chunk: ", sentence)
+            if GlobalEvents.is_user_speaking():
+                logger.debug("Barge-in — aborting LLM stream")
+                self._drain_llm_queue()
+                return
+
+            # Pass the token to the LLM chunk queue for TTS processing
+            if GlobalEvents.is_tts_enabled():
+                print("sent to tts queue: ", sentence)
+                GlobalQueues.llm_chunk_queue.put(sentence)
+
+            # Pass the token to the TUI for display
+            if self._on_chunk:
+                try:
+                    self._on_chunk(sentence)
+                except Exception:
+                    logger.exception("on_chunk callback failed")
+        
+        # Signal the end of a new turn to the TUI
+        if self._on_turn_end:
+            try:
+                self._on_turn_end()
+            except Exception:
+                logger.exception("on_turn_end callback failed")

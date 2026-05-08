@@ -13,6 +13,7 @@ from __future__ import annotations
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
+from langchain.agents import create_agent
 from pydantic import BaseModel, Field
 
 from src.llms import llm_factory
@@ -21,85 +22,71 @@ from src.prompts import load_prompt
 from src.config.logger import get_logger
 from src.agents.planningagent.agent_tools import read_file, list_directory, search_content, search_files, change_directory
 
-all_planning_tools = [read_file, list_directory, search_content, search_files, change_directory]
-
-logger = get_logger("agents.planning")
-
-
-# ── Structured output schemas ────────────────────────────────────────
 
 class PlanStep(BaseModel):
-    """A single step in the action checklist."""
+    """A single step in the action checklist — agent-agnostic."""
     id: str = Field(description="Unique step id e.g. step_1")
-    intent: str = Field(description="WHAT this step accomplishes — not HOW")
-    assigned_agent: str = Field(description="Which agent handles this step")
-    task_description: str = Field(description="What the agent needs to do")
-    input_context: str = Field(description="What context this agent needs to do its job")
+    intent: str = Field(description="WHAT this step accomplishes — not HOW, not WHO")
+    task_description: str = Field(description="What needs to be done for this step")
+    input_context: str = Field(description="Context needed to execute this step")
     depends_on: list[str] = Field(default_factory=list, description="Step ids that must complete first")
-    expected_output: str = Field(description="What the supervisor should receive back from this agent")
+    expected_output: str = Field(description="What the supervisor should receive back")
 
 
 class PlanOutput(BaseModel):
     """Full output from the planning node."""
     task_summary: str = Field(description="A brief summary of the task")
     implementation_plan: str = Field(
-        description="Detailed narrative plan: approach, reasoning, architecture decisions, dependencies"
+        description=(
+            "Markdown artifact: (1) context gathered from the workspace, "
+            "(2) files to change or actions to take, "
+            "(3) optional prose suggesting which agents fit which steps (advisory only)."
+        )
     )
     action_checklist: list[PlanStep] = Field(
-        description="Ordered list of steps — intent + agent assignment only, never tool-level instructions"
+        description="Ordered list of agent-agnostic steps — describe WHAT, not WHO or HOW"
     )
 
 
-# ── Graph node ───────────────────────────────────────────────────────
+logger = get_logger("agents.planning")
 
-def planning_node(state: MainState) -> dict:
-    """Analyze task and produce a structured plan with action checklist."""
-    llm = llm_factory.create("GEMMA_4_31B", temperature=0.7, max_tokens=1024 * 8)
-    llm_with_tools = llm.bind_tools(all_planning_tools)
-    structured_llm = llm_with_tools.with_structured_output(PlanOutput)
+all_planning_tools = [read_file, list_directory, search_content, search_files, change_directory]
 
-    system_prompt = load_prompt("planning_agent")
+llm = llm_factory.create("GEMMA_4_31B", temperature=0.7, max_tokens=1024 * 8)
+system_prompt = load_prompt("planning_agent")
 
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=f"Task: {state['user_query']}"),
+planning_agent = create_agent(
+    model=llm,
+    tools=all_planning_tools,
+    system_prompt=system_prompt,
+    response_format=PlanOutput
+)
+
+
+async def planning_node(state: MainState) -> dict:
+    """Analyze task, use tools to research, and produce a structured plan."""
+    
+    messages = state.get("messages", []) +[
+        HumanMessage(content=f"Task: {state['user_query']}")
     ]
-
-    result: PlanOutput = structured_llm.invoke(messages)
-    logger.info("Plan generated: %s (%d steps)", result.task_summary, len(result.action_checklist))
-
-    # Convert PlanSteps to TaskItem-compatible dicts
-    action_checklist = []
-    for step in result.action_checklist:
-        action_checklist.append({
+    result = await planning_agent.ainvoke({"messages": messages})
+    plan: PlanOutput = result["structured_response"]
+    
+    logger.info("Plan generated: %s (%d steps)", plan.task_summary, len(plan.action_checklist))
+    action_checklist =[
+        {
             "id": step.id,
             "task_description": step.task_description,
-            "assigned_agent": step.assigned_agent,
             "input_context": step.input_context,
+            "depends_on": step.depends_on,
             "status": "pending",
             "result": "",
-        })
+        }
+        for step in plan.action_checklist
+    ]
 
     return {
         "messages": [AIMessage(content=f"[Planning Agent] Plan ready with {len(action_checklist)} steps.")],
-        "implementation_plan": result.implementation_plan,
+        "implementation_plan": plan.implementation_plan,
         "action_checklist": action_checklist,
     }
-
-
-# ── Build sub-graph ──────────────────────────────────────────────────
-
-def build_planning_graph():
-    graph = StateGraph(MainState)
-
-    graph.add_node("planning_node", planning_node)
-    graph.add_node("tools", ToolNode(all_planning_tools))
-
-    graph.add_edge(START, "planning_node")
-    graph.add_conditional_edges("planning_node", tools_condition)
-    graph.add_edge("tools", "planning_node")
-
-    return graph.compile()
-
-
-planning_agent_graph = build_planning_graph()

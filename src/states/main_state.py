@@ -22,15 +22,19 @@ from __future__ import annotations
 import operator
 from typing import Annotated, TypedDict
 
-from langchain_core.messages import AnyMessage
+from langchain_core.messages import AnyMessage, HumanMessage
 
 
-class TaskItem(TypedDict):
-    """A single task in the action checklist."""
+class TaskItem(TypedDict, total=False):
+    """A single task in the action checklist — agent-agnostic.
+
+    The supervisor decides which agent runs the task at dispatch time;
+    no `assigned_agent` is stored on the task itself.
+    """
     id: str
     task_description: str
-    assigned_agent: str       # "coding_agent" (more agents in the future)
     input_context: str        # extra context passed to the agent
+    depends_on: list[str]     # ids of tasks that must finish first
     status: str               # "pending" | "working" | "done" | "failed"
     result: str               # agent's output for this task
 
@@ -57,3 +61,24 @@ class MainState(TypedDict):
     iteration: int                               # supervisor loop counter
     next_agent: str                              # supervisor routing
     extra_context: Annotated[list[dict], operator.add]  # extra context for the agents
+
+
+def initial_main_state(user_query: str, cwd: str = "/") -> dict:
+    """Build a fresh MainState dict for a new turn or delegation.
+
+    Centralised so chat agent, workflow entry point, and any future caller
+    don't redefine the field set.
+    """
+    return {
+        "messages": [HumanMessage(content=user_query)],
+        "user_query": user_query,
+        "complexity": "",
+        "implementation_plan": "",
+        "action_checklist": [],
+        "current_task": {},
+        "completed_tasks": [],
+        "final_response": "",
+        "cwd": cwd,
+        "iteration": 0,
+        "next_agent": "",
+    }

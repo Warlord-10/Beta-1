@@ -1,5 +1,5 @@
 """Code Agent — self-contained sub-graph for coding tasks."""
 
-from src.agents.codeagent.code_agent import coding_agent_graph
+from src.agents.codeagent.code_agent import run_coding_node
 
-__all__ = ["coding_agent_graph"]
+__all__ = ["run_coding_node"]
