@@ -45,3 +45,9 @@ class GlobalQueues:
     llm_chunk_queue: Queue = Queue()
     input_queue: Queue = Queue()
     audio_chunk_queue: Queue = Queue()
+
+    # Human-in-the-loop plan review.
+    # Workflow → frontend: pushes the plan markdown to display.
+    # Frontend → workflow: pushes "approve" | "reject" (or modified plan text).
+    plan_review_request_queue: Queue = Queue()
+    plan_review_response_queue: Queue = Queue()

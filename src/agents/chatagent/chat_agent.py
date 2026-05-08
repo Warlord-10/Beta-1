@@ -20,7 +20,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from src.config.logger import get_logger
 from src.llms import llm_factory
 from src.prompts import load_prompt
-from src.states.main_state import MainState, initial_main_state
+from langchain_core.messages import HumanMessage
+
+from src.states.main_state import ChatState
 
 # Read-only file tools
 from src.tools.file_tools import (get_file_info, list_directory, read_file,
@@ -100,17 +102,23 @@ class ChatAgent:
             tools=CHAT_AGENT_TOOLS,
             system_prompt=load_prompt("chat_agent"),
             checkpointer=self.checkpointer,
-            state_schema=MainState,
+            state_schema=ChatState,
         )
+
+    @staticmethod
+    def _turn_input(user_input: str) -> dict:
+        """Per-turn input — only a new HumanMessage. Prior chat history is
+        preserved by the checkpointer; planner/supervisor state never enters."""
+        return {"messages": [HumanMessage(content=user_input)]}
 
     def chat(self, user_input: str):
         """Synchronous one-shot invoke (debug / non-streaming callers)."""
-        return self.agent.invoke(initial_main_state(user_input), config=self.config)
+        return self.agent.invoke(self._turn_input(user_input), config=self.config)
 
     async def astream(self, user_input: str):
         """Async token stream of assistant content."""
         stream = self.agent.astream(
-            initial_main_state(user_input),
+            self._turn_input(user_input),
             config=self.config,
             stream_mode="messages",
             version="v2",
@@ -125,7 +133,7 @@ class ChatAgent:
     def stream(self, user_input: str):
         """Synchronous one-shot invoke (debug / non-streaming callers)."""
         stream = self.agent.stream(
-            initial_main_state(user_input),
+            self._turn_input(user_input),
             config=self.config,
             stream_mode="messages",
             version="v2",

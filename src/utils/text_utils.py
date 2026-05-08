@@ -4,6 +4,7 @@ import re
 from typing import Generator, Iterable
 
 from src.config.logger import get_logger
+import asyncio
 
 logger = get_logger("voice.text_utils")
 
@@ -54,16 +55,19 @@ async def accumulate_sentences_async(chunks):
             if char in (".", "!", "?"):
                 yield buffer
                 buffer = ""
+                await asyncio.sleep(0)
             
             # Soft break - only if buffer is large enough
             elif char == "," and len(buffer) > 60:
                 yield buffer
                 buffer = ""
+                await asyncio.sleep(0)
             
             # Force break on space if too long
             elif char == " " and len(buffer) > 120:
                 yield buffer
                 buffer = ""
+                await asyncio.sleep(0)
 
     # Flush remaining
     if buffer:

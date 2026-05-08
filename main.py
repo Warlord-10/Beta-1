@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import threading
+import asyncio
 
 from src.cli.tui import TUI
 from src.pipeline import Pipeline
@@ -18,7 +19,8 @@ def main() -> None:
     s = input("Wants GUI? (y/n): ")
 
     pipeline = Pipeline()
-    pipeline.start()
+    asyncio.run(pipeline.async_start())
+    # pipeline.start()
 
     if s.lower() == 'y':
         try:

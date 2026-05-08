@@ -47,6 +47,13 @@ class CodingState(TypedDict):
     cwd: str
 
 
+class ChatState(TypedDict):
+    """Minimal state for the chat agent — keeps its memory isolated from the
+    planner/supervisor workflow. Only `messages` is reduced (append-only)."""
+    messages: Annotated[list[AnyMessage], operator.add]
+    cwd: str
+
+
 class MainState(TypedDict):
     """Unified state shared across all agents and the orchestrator."""
     messages: Annotated[list[AnyMessage], operator.add]

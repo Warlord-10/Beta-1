@@ -192,13 +192,24 @@ class Pipeline:
 
     async def async_consumer_loop(self) -> None:
         while not self._stop_event.is_set():
-            try:
-                user_message = GlobalQueues.input_queue.get(timeout=0.25)
-            except queue.Empty:
-                await asyncio.sleep(0.1)
+            user_message = await asyncio.to_thread(self._safe_queue_get,
+                                                   GlobalQueues.input_queue, 0.25)
+            if user_message is None:
+                await asyncio.sleep(0.05)
                 continue
             print("Received message in consumer loop: ", user_message)
             await self.async_handle_turn(user_message)
+
+    @staticmethod
+    def _safe_queue_get(q: queue.Queue, timeout: float):
+        """Blocking `Queue.get` with timeout — None on empty.
+
+        Always run inside `asyncio.to_thread` from coroutines so the event
+        loop is never blocked by the wait."""
+        try:
+            return q.get(timeout=timeout)
+        except queue.Empty:
+            return None
 
     async def async_handle_turn(self, user_message: str) -> None:
         # Drain the queue before starting the new turn
@@ -212,6 +223,21 @@ class Pipeline:
                 logger.exception("on_turn_start callback failed")
 
         # Main loop for handling the llm output
+        # llm_chunk_generator = self._chat_agent.astream(user_message)
+        async def get_llm_chunks_async():
+            chunks =[
+                "Hello I am Beta-1, Deepanshu ",
+                "Joshi built me and I can do a lot of ",
+                "stuff like, coding, chatting and much more. ",
+                "What task you want to be done now? ",
+                "I am all yours"
+            ]
+            for chunk in chunks:
+                # Simulate the network/generation delay of a real LLM
+                await asyncio.sleep(0.3) 
+                yield chunk
+
+        # llm_chunk_generator = get_llm_chunks_async()
         llm_chunk_generator = self._chat_agent.astream(user_message)
         async for sentence in accumulate_sentences_async(llm_chunk_generator):
             print("llm chunk: ", sentence)
