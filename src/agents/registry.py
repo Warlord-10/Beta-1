@@ -10,6 +10,7 @@ from __future__ import annotations
 
 AGENT_REGISTRY: dict[str, str] = {
     "coding_agent": "Writes/edits code, reads/writes files, lints, debugs, searches files and content.",
+    "research_agent": "Searches the web, extracts page content, cross-references sources, and synthesizes research findings.",
 }
 
 

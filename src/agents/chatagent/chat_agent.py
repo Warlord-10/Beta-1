@@ -13,17 +13,15 @@ from __future__ import annotations
 import asyncio
 
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import AIMessageChunk, HumanMessage
 from langchain_core.tools import tool
+from langchain_google_genai import HarmBlockThreshold, HarmCategory
 from langgraph.checkpoint.memory import InMemorySaver
 
 from src.config.logger import get_logger
 from src.llms import llm_factory
 from src.prompts import load_prompt
-from langchain_core.messages import HumanMessage
-
 from src.states.main_state import ChatState
-
 # Read-only file tools
 from src.tools.file_tools import (get_file_info, list_directory, read_file,
                                   search_content, search_files)
@@ -36,6 +34,8 @@ from src.tools.scheduler_tools import (create_scheduled_task,
                                        list_scheduled_tasks,
                                        modify_scheduled_task,
                                        toggle_scheduled_task)
+# Web search (lightweight — deep research goes through delegate_to_planner)
+from src.tools.search_tools import regular_search
 # Safe system tools
 from src.tools.system_tools.safe_bash import safe_bash
 
@@ -76,6 +76,9 @@ CHAT_AGENT_TOOLS = [
     search_content,
     safe_bash,
 
+    # Web search (quick lookups)
+    regular_search,
+
     # Delegation
     delegate_to_planner,
 
@@ -96,7 +99,18 @@ class ChatAgent:
     def __init__(self, config: dict):
         self.config = config
         self.checkpointer = InMemorySaver()
-        self.llm = llm_factory.create("GEMMA_4_31B", temperature=0.7, max_tokens=1024)
+        self.llm = llm_factory.create(
+            "GEMMA_4_31B", 
+            temperature=1, 
+            max_tokens=1024, 
+            safety_settings={
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            }, 
+            thinking_level="minimal"
+        )
         self.agent = create_agent(
             model=self.llm,
             tools=CHAT_AGENT_TOOLS,
@@ -129,8 +143,8 @@ class ChatAgent:
             token, _metadata = chunk.get("data", (None, None))
             if isinstance(token, AIMessageChunk) and isinstance(token.content, str):
                 yield token.content
-            else:
-                print(token.content[0].get("thinking"))
+            # else:
+            #     print(token.content[0].get("thinking"))
     
     def stream(self, user_input: str):
         """Synchronous one-shot invoke (debug / non-streaming callers)."""
@@ -145,4 +159,5 @@ class ChatAgent:
                 continue
             token, _metadata = chunk.get("data", (None, None))
             if isinstance(token, AIMessageChunk) and isinstance(token.content, str):
+                print(token.content)
                 yield token.content

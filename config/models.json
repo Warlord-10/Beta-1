@@ -16,6 +16,22 @@
       "output": 0.0
     }
   },
+  "GEMMA_4_26B": {
+    "provider": "google",
+    "model": "gemma-4-26b-a4b-it",
+    "pricing": {
+      "input": 0.0,
+      "output": 0.0
+    }
+  },
+  "GEMINI_3_1_FLASH_LITE": {
+    "provider": "google",
+    "model": "gemini-3.1-flash-lite",
+    "pricing": {
+      "input": 0.25,
+      "output": 1.50
+    }
+  },
   "GROQ_LLAMA_70B": {
     "provider": "groq",
     "model": "llama-3.3-70b-versatile",

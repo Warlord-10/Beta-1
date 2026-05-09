@@ -134,8 +134,24 @@ async def coding_agent_wrapper(state: MainState) -> dict:
     }
 
 
+async def research_agent_wrapper(state: MainState) -> dict:
+    """Invoke the research sub-graph for the current task and mark it done."""
+    from src.agents.researchagent import run_research_node
+
+    current_task = state["current_task"]
+    logger.info("Invoking research agent for task: %s", current_task.get("id", "?"))
+
+    result = await run_research_node(state)
+
+    return {
+        "messages": result.get("messages", [AIMessage(content="Research Completed Successfully")]),
+        "completed_tasks": [current_task],
+    }
+
+
 AGENT_NODES = {
     "coding_agent": coding_agent_wrapper,
+    "research_agent": research_agent_wrapper,
 }
 
 

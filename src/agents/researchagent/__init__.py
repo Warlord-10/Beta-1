@@ -1,3 +1,5 @@
-from src.agents.searchagent.search_agent import search_agent_graph
+"""Research Agent — sub-graph for web research and information synthesis."""
 
-__all__ = ["search_agent_graph"]
+from src.agents.researchagent.search_agent import research_agent_graph, run_research_node
+
+__all__ = ["research_agent_graph", "run_research_node"]

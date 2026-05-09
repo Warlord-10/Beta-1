@@ -158,8 +158,8 @@ class Pipeline:
                 await asyncio.sleep(0.5)
                 yield sentence
         
-        # token_stream = self._chat_agent.astream(user_message)
-        token_stream = tempp()
+        token_stream = self._chat_agent.astream(user_message)
+        # token_stream = tempp()
         async for sentence in accumulate_sentences_async(token_stream):
             if GlobalEvents.is_user_speaking():
                 logger.debug("Barge-in — aborting LLM stream")
