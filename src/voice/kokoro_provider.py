@@ -109,8 +109,6 @@ class KokoroTTS(BaseTTS):
         if not text.strip():
             return
 
-        print("i will now create the audio from text: ", text, time.time())
-
         try:
             logger.debug("Synthesizing: %r", text[:60])
             for _gs, _ps, audio in self.pipeline(
@@ -119,8 +117,6 @@ class KokoroTTS(BaseTTS):
                 speed=self.speed,
                 split_pattern=r'\n+',
             ):
-                print("audio chunk processed from tts: ", _gs, time.time())
-
                 # Check barge-in while streaming audio
                 if GlobalEvents.is_user_speaking():
                     self._flush_audio_queue()
@@ -156,7 +152,6 @@ class KokoroTTS(BaseTTS):
 
                     try:
                         llm_chunk = GlobalQueues.llm_chunk_queue.get(timeout=0.05)
-                        print("Received message in tts loop: ", llm_chunk, time.time())
                     except queue.Empty:
                         continue
 
@@ -168,14 +163,6 @@ class KokoroTTS(BaseTTS):
 
                     logger.debug("TTS received chunk: %r", llm_chunk[:40])
                     self.synthesize(llm_chunk)
-
-                    # for audio_chunk in self.synthesize(llm_chunk):
-                    #     print("audio chunk processed from tts:", time.time())
-                    #     # Check barge-in during synthesis too
-                    #     if self._check_user_speaking():
-                    #         logger.debug("Barge-in during synthesis — discarding")
-                    #         break
-                    #     self._audio_queue.put(audio_chunk)  # blocks if full → backpressure
 
     def shutdown(self) -> None:
         GlobalQueues.llm_chunk_queue.put(None)

@@ -129,6 +129,8 @@ class ChatAgent:
             token, _metadata = chunk.get("data", (None, None))
             if isinstance(token, AIMessageChunk) and isinstance(token.content, str):
                 yield token.content
+            else:
+                print(token.content[0].get("thinking"))
     
     def stream(self, user_input: str):
         """Synchronous one-shot invoke (debug / non-streaming callers)."""

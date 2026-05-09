@@ -112,6 +112,7 @@ class ASRService:
                     self._speech_buffer.append(chunk)
 
                     if is_speech:
+                        print("detected speech")
                         GlobalEvents.set_user_speaking(True)
                         self._reset_silence_chunks()
                         current_speech_chunk += 1
