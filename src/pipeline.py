@@ -23,6 +23,7 @@ import uuid
 from typing import Callable, Optional
 
 from src.agents.chatagent.chat_agent import ChatAgent
+from src.utils.io import IO
 from src.asr.asr_service import ASRService
 from src.config.events import GlobalEvents, GlobalQueues
 from src.config.logger import get_logger
@@ -47,6 +48,8 @@ class Pipeline:
     """Headless chat pipeline: queues in, callbacks out."""
 
     def __init__(self) -> None:
+        self.io_unit = IO()
+
         self._stop_event = threading.Event()
 
         self._chat_agent = ChatAgent(
@@ -59,7 +62,6 @@ class Pipeline:
         self._asr_service = ASRService()
 
         self.scheduler = SchedulerManager()
-        self.scheduler.attach_callback(self.submit)
 
         self._on_chunk: Optional[OnChunk] = None
         self._on_turn_start: Optional[OnTurnStart] = None
@@ -86,7 +88,7 @@ class Pipeline:
     def submit(self, user_message: str) -> None:
         """Queue a user message for the LLM."""
         if user_message and user_message.strip():
-            GlobalQueues.input_queue.put(user_message.strip())
+            self.io_unit.push_to_llm(user_message.strip())
 
     def start(self) -> None:
         """Spin up ASR, TTS, and the async chat/workflow thread."""
@@ -161,6 +163,7 @@ class Pipeline:
         token_stream = self._chat_agent.astream(user_message)
         # token_stream = tempp()
         async for sentence in accumulate_sentences_async(token_stream):
+            print(sentence)
             if GlobalEvents.is_user_speaking():
                 logger.debug("Barge-in — aborting LLM stream")
                 self._drain_llm_queue()

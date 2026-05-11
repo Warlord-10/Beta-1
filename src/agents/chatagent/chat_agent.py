@@ -21,6 +21,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from src.config.logger import get_logger
 from src.llms import llm_factory
 from src.prompts import load_prompt
+from src.utils.io import IO
 from src.states.main_state import ChatState
 # Read-only file tools
 from src.tools.file_tools import (get_file_info, list_directory, read_file,
@@ -52,8 +53,9 @@ async def delegate_to_planner(task_summary: str) -> str:
     the final result is fed back via `dummy_enqueue_result`.
     """
     # Imported lazily to avoid circular imports (workflow → chat agent tools).
-    from src.pipeline import dummy_enqueue_result
     from src.workflow import run_main_graph
+
+    io_unit = IO()
 
     async def _run() -> None:
         try:
@@ -61,7 +63,8 @@ async def delegate_to_planner(task_summary: str) -> str:
         except Exception as exc:
             logger.exception("delegate_to_planner: workflow failed")
             final = f"[delegation failed] {exc}"
-        dummy_enqueue_result(final)
+        
+        io_unit.push_to_llm(final)
 
     asyncio.create_task(_run())
     return f"DELEGATED: {task_summary}. I'll follow up when it's done."
@@ -102,7 +105,7 @@ class ChatAgent:
         self.llm = llm_factory.create(
             "GEMMA_4_31B", 
             temperature=1, 
-            max_tokens=1024, 
+            max_tokens=512, 
             safety_settings={
                 HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
@@ -131,33 +134,45 @@ class ChatAgent:
 
     async def astream(self, user_input: str):
         """Async token stream of assistant content."""
-        stream = self.agent.astream(
-            self._turn_input(user_input),
-            config=self.config,
-            stream_mode="messages",
-            version="v2",
-        )
-        async for chunk in stream:
-            if chunk.get("type") != "messages":
-                continue
-            token, _metadata = chunk.get("data", (None, None))
-            if isinstance(token, AIMessageChunk) and isinstance(token.content, str):
-                yield token.content
+
+        try:
+            stream = self.agent.stream(
+                self._turn_input(user_input),
+                config=self.config,
+                stream_mode="messages",
+                version="v2",
+            )
+            for chunk in stream:
+                if chunk.get("type") != "messages":
+                    continue
+                token, _metadata = chunk.get("data", (None, None))
+                if isinstance(token, AIMessageChunk) and isinstance(token.content, str):
+                    yield token.content
+
+                await asyncio.sleep(0)
+        except Exception as e:
+            print(e)
+            yield "Got an error, Try again"
             # else:
             #     print(token.content[0].get("thinking"))
     
     def stream(self, user_input: str):
         """Synchronous one-shot invoke (debug / non-streaming callers)."""
-        stream = self.agent.stream(
-            self._turn_input(user_input),
-            config=self.config,
-            stream_mode="messages",
-            version="v2",
-        )
-        for chunk in stream:
-            if chunk.get("type") != "messages":
-                continue
-            token, _metadata = chunk.get("data", (None, None))
-            if isinstance(token, AIMessageChunk) and isinstance(token.content, str):
-                print(token.content)
-                yield token.content
+
+        try:
+            stream = self.agent.stream(
+                self._turn_input(user_input),
+                config=self.config,
+                stream_mode="messages",
+                version="v2",
+            )
+            for chunk in stream:
+                if chunk.get("type") != "messages":
+                    continue
+                token, _metadata = chunk.get("data", (None, None))
+                if isinstance(token, AIMessageChunk) and isinstance(token.content, str):
+                    print(token.content)
+                    yield token.content
+        except Exception as e:
+            print(e)
+            yield "Got an error, Try again"
