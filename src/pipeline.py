@@ -35,9 +35,11 @@ from src.voice import get_tts_engine
 logger = get_logger("pipeline")
 
 OnChunk = Callable[[str], None]
+OnThinking = Callable[[str], None]
 OnTurnStart = Callable[[], None]
 OnTurnEnd = Callable[[], None]
 OnUserMessage = Callable[[str], None]
+OnPlanReview = Callable[[dict], None]
 
 
 def dummy_enqueue_result(text: str) -> None:
@@ -64,9 +66,11 @@ class Pipeline:
         self.scheduler = SchedulerManager()
 
         self._on_chunk: Optional[OnChunk] = None
+        self._on_thinking: Optional[OnThinking] = None
         self._on_turn_start: Optional[OnTurnStart] = None
         self._on_turn_end: Optional[OnTurnEnd] = None
         self._on_user_msg: Optional[OnUserMessage] = None
+        self._on_plan_review: Optional[OnPlanReview] = None
 
         self._threads: list[threading.Thread] = []
 
@@ -76,19 +80,29 @@ class Pipeline:
         on_chunk: OnChunk,
         on_turn_start: Optional[OnTurnStart] = None,
         on_turn_end: Optional[OnTurnEnd] = None,
+        on_thinking: Optional[OnThinking] = None,
     ) -> None:
         self._on_chunk = on_chunk
         self._on_turn_start = on_turn_start
         self._on_turn_end = on_turn_end
+        self._on_thinking = on_thinking
 
     def attach_user_input_listener(self, on_user_msg: OnUserMessage) -> None:
         """Called when a user message originates from outside (e.g. ASR)."""
         self._on_user_msg = on_user_msg
 
+    def attach_plan_review_listener(self, on_plan_review: OnPlanReview) -> None:
+        """Called when the workflow asks for human plan approval."""
+        self._on_plan_review = on_plan_review
+
     def submit(self, user_message: str) -> None:
         """Queue a user message for the LLM."""
         if user_message and user_message.strip():
             self.io_unit.push_to_llm(user_message.strip())
+
+    def submit_plan_review(self, response: str) -> None:
+        """Push the user's plan review verdict back to the workflow."""
+        GlobalQueues.plan_review_response_queue.put(response)
 
     def start(self) -> None:
         """Spin up ASR, TTS, and the async chat/workflow thread."""
@@ -98,6 +112,7 @@ class Pipeline:
         self._spawn(self._asr_loop, "asr-worker")
         self._spawn(self._tts.stream, "tts-worker")
         self._spawn(self._llm_loop, "pipeline-loop")
+        self._spawn(self._plan_review_loop, "plan-review-watcher")
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -150,20 +165,16 @@ class Pipeline:
         self._drain_llm_queue()
         self._fire(self._on_turn_start, "on_turn_start")
 
-        async def tempp():
-            for sentence in [
-                "Hello I am Beta-1, Deepanshu Joshi",
-                "built me as a side project. I can do",
-                " lot of stuff like coding, chatting and many more ",
-                "so what you want me to do?"
-            ]:
-                await asyncio.sleep(0.5)
-                yield sentence
-        
         token_stream = self._chat_agent.astream(user_message)
-        # token_stream = tempp()
-        async for sentence in accumulate_sentences_async(token_stream):
-            print(sentence)
+
+        async def _content_only(stream):
+            async for kind, text in stream:
+                if kind == "thinking":
+                    self._fire(self._on_thinking, "on_thinking", text)
+                    continue
+                yield text
+
+        async for sentence in accumulate_sentences_async(_content_only(token_stream)):
             if GlobalEvents.is_user_speaking():
                 logger.debug("Barge-in — aborting LLM stream")
                 self._drain_llm_queue()
@@ -176,6 +187,15 @@ class Pipeline:
             await asyncio.sleep(0)
 
         self._fire(self._on_turn_end, "on_turn_end")
+
+    def _plan_review_loop(self) -> None:
+        """Watch for plan-review requests from the workflow and forward them."""
+        while not self._stop_event.is_set():
+            try:
+                plan = GlobalQueues.plan_review_request_queue.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            self._fire(self._on_plan_review, "on_plan_review", plan)
 
     def _asr_loop(self) -> None:
         full_text = ""

@@ -132,8 +132,31 @@ class ChatAgent:
         """Synchronous one-shot invoke (debug / non-streaming callers)."""
         return self.agent.invoke(self._turn_input(user_input), config=self.config)
 
+    @staticmethod
+    def _split_token(token: AIMessageChunk):
+        """Yield (kind, text) parts from an AIMessageChunk.
+
+        kind is "thinking" or "content". Handles both plain-string content and
+        the list-of-parts shape used when extended thinking is on.
+        """
+        content = token.content
+        if isinstance(content, str):
+            if content:
+                yield ("content", content)
+            return
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("thinking"):
+                    yield ("thinking", part["thinking"])
+                elif part.get("type") == "text" and part.get("text"):
+                    yield ("content", part["text"])
+                elif isinstance(part.get("text"), str) and part["text"]:
+                    yield ("content", part["text"])
+
     async def astream(self, user_input: str):
-        """Async token stream of assistant content."""
+        """Async stream of (kind, text) tuples — kind is "thinking" or "content"."""
 
         try:
             stream = self.agent.stream(
@@ -146,18 +169,16 @@ class ChatAgent:
                 if chunk.get("type") != "messages":
                     continue
                 token, _metadata = chunk.get("data", (None, None))
-                if isinstance(token, AIMessageChunk) and isinstance(token.content, str):
-                    yield token.content
-
+                if isinstance(token, AIMessageChunk):
+                    for part in self._split_token(token):
+                        yield part
                 await asyncio.sleep(0)
         except Exception as e:
-            print(e)
-            yield "Got an error, Try again"
-            # else:
-            #     print(token.content[0].get("thinking"))
-    
+            logger.exception("chat astream failed")
+            yield ("content", f"Got an error: {e}")
+
     def stream(self, user_input: str):
-        """Synchronous one-shot invoke (debug / non-streaming callers)."""
+        """Sync (kind, text) stream — mirror of astream for debugging."""
 
         try:
             stream = self.agent.stream(
@@ -170,9 +191,9 @@ class ChatAgent:
                 if chunk.get("type") != "messages":
                     continue
                 token, _metadata = chunk.get("data", (None, None))
-                if isinstance(token, AIMessageChunk) and isinstance(token.content, str):
-                    print(token.content)
-                    yield token.content
+                if isinstance(token, AIMessageChunk):
+                    for part in self._split_token(token):
+                        yield part
         except Exception as e:
-            print(e)
-            yield "Got an error, Try again"
+            logger.exception("chat stream failed")
+            yield ("content", f"Got an error: {e}")
