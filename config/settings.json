@@ -4,6 +4,8 @@
   "MODELS_DIR": "models",
   "TTS_PROVIDER": "kokoro",
   "daily_budget_usd": 0,
+  "is_planning_review": false,
+  "planning_review_timeout_s": 120,
   "TTS_CONFIG": {
     "supertonic": {
       "voice_name": "F1",

@@ -1,21 +1,21 @@
-"""Search tools — tools for the Search Agent."""
+"""Search tools — web search, content extraction, and advanced search."""
 
-from src.tools.search_tools.web_search import web_search
-from src.tools.search_tools.fetch_url import fetch_url
-from src.tools.search_tools.read_docs import read_docs
-from src.tools.search_tools.scrape_page import scrape_page
+from src.tools.search_tools.browse_web import (
+    advanced_search,
+    extract_text,
+    regular_search,
+)
 
-search_tools = [
-    web_search,
-    fetch_url,
-    read_docs,
-    scrape_page,
-]
+# All tools for the research agent
+search_tools = [regular_search, advanced_search, extract_text]
+
+# Lightweight subset for the chat agent (quick lookups only)
+chat_search_tools = [regular_search]
 
 __all__ = [
+    "regular_search",
+    "advanced_search",
+    "extract_text",
     "search_tools",
-    "web_search",
-    "fetch_url",
-    "read_docs",
-    "scrape_page",
+    "chat_search_tools",
 ]

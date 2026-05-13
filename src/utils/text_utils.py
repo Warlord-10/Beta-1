@@ -4,6 +4,7 @@ import re
 from typing import Generator, Iterable
 
 from src.config.logger import get_logger
+import asyncio
 
 logger = get_logger("voice.text_utils")
 
@@ -13,33 +14,64 @@ def accumulate_sentences(chunks):
     chunks: iterable of strings (LLM stream)
     yields: complete sentences/phrases ready for TTS
     """
-    buffer = " "
+    buffer = ""
     
-    for chunk in chunks:        # ← iterates over LLM stream
-        for char in chunk:      # ← iterates over chars in each chunk
+    for chunk in chunks:
+        for char in chunk:            
             buffer += char
             
             # Hard break - always split
-            if char in (". ", "!", "?"):
-                if buffer.strip():
-                    yield buffer.strip()
-                buffer = " "
+            if char in (".", "!", "?"):
+                yield buffer
+                buffer = ""
             
             # Soft break - only if buffer is large enough
             elif char == "," and len(buffer) > 60:
-                if buffer.strip():
-                    yield buffer.strip()
-                buffer = " "
+                yield buffer
+                buffer = ""
             
             # Force break on space if too long
             elif char == " " and len(buffer) > 120:
-                if buffer.strip():
-                    yield buffer.strip()
-                buffer = " "
-    
+                yield buffer
+                buffer = ""
+
     # Flush remaining
-    if buffer.strip():
-        yield buffer.strip()
+    if buffer:
+        yield buffer
+
+
+async def accumulate_sentences_async(chunks):
+    """
+    chunks: async iterable of strings (LLM stream)
+    yields: complete sentences/phrases ready for TTS (async generator)
+    """
+    buffer = ""
+
+    async for chunk in chunks:
+        for char in chunk:
+            buffer += char
+            
+            # Hard break - always split
+            if char in (".", "!", "?"):
+                yield buffer
+                buffer = ""
+                await asyncio.sleep(0)
+            
+            # Soft break - only if buffer is large enough
+            elif char == "," and len(buffer) > 60:
+                yield buffer
+                buffer = ""
+                await asyncio.sleep(0)
+            
+            # Force break on space if too long
+            elif char == " " and len(buffer) > 120:
+                yield buffer
+                buffer = ""
+                await asyncio.sleep(0)
+
+    # Flush remaining
+    if buffer:
+        yield buffer
 
 def accumulate_phrases(chunks, soft_break_min: int = 30, hard_break_max: int = 120):
     """

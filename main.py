@@ -4,11 +4,11 @@ Run:
     python main.py
 """
 
+import threading
+
 from dotenv import load_dotenv
 
 load_dotenv()
-
-import threading
 
 from src.cli.tui import TUI
 from src.pipeline import Pipeline
@@ -18,8 +18,7 @@ def main() -> None:
     pipeline = Pipeline()
     pipeline.start()
 
-    s = input("Wants GUI? (y/n): ")
-    if s.lower() == 'y':
+    if input("Wants GUI? (y/n): ").strip().lower() == "y":
         try:
             TUI(pipeline=pipeline).run()
         finally:

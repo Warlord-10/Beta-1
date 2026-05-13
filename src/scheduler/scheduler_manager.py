@@ -26,6 +26,7 @@ from src.scheduler.models import TaskRecord
 from src.scheduler.task_store import TaskStore
 from src.config.logger import get_logger
 from src.workflow import main_graph
+from src.utils.io import IO
 
 logger = get_logger("scheduler.manager")
 
@@ -48,12 +49,9 @@ class SchedulerManager:
             cls._instance._init_scheduler(task_store or TaskStore())
         return cls._instance
 
-    def attach_callback(self, cb):
-        self.send_msg = cb
-
     def _init_scheduler(self, task_store: TaskStore):
-        self.send_msg = None
         self.store = task_store
+        self.io_unit = IO()
         
         # Suppress apscheduler noisy logs
         logging.getLogger('apscheduler').setLevel(logging.WARNING)
@@ -109,8 +107,6 @@ class SchedulerManager:
     def _execute_task(self, task_id: str):
         """Fired by APScheduler. Loads context, invokes graph, prints output."""
         
-        assert self.send_msg is not None, "No callback attached for scheduled task execution."
-        
         task = self.store.get(task_id)
         if not task or not task.is_enabled:
             logger.warning("Job fired for disabled or missing task %s", task_id)
@@ -127,7 +123,7 @@ class SchedulerManager:
 
         print(f"\n{Colors.MAGENTA}{Colors.BOLD}⏰ Scheduled Task Fired ▸{Colors.RESET} {task.task_description}")
         
-        self.send_msg(context)
+        self.io_unit.push_to_llm(context)
 
         # Update next_run_at in store if recurred
         job = self.scheduler.get_job(task_id)

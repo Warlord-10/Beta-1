@@ -1,89 +1,54 @@
-"""LangGraph sub-graph for the Search Agent.
+"""Research Agent — self-contained ReAct sub-graph via create_agent.
 
-Simple ReAct agent — no verify sub-loop (searches are non-destructive).
-  LLM → tool calls → LLM → … → final text response
+The supervisor invokes this as a black box via run_research_node(state).
+The research agent reads `current_task` from MainState, searches the web,
+and returns synthesized findings.
 """
 
 from __future__ import annotations
 
-import operator
-from typing import Annotated
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage
 
-from langchain_core.messages import AnyMessage, AIMessage, SystemMessage
-from src.llms import llm_factory
-from langgraph.graph import StateGraph, START, END
-from langgraph.prebuilt import ToolNode
-
-from src.agents.searchagent.agent_tools import search_agent_tools
-from src.agents.searchagent.system_prompt import SEARCH_AGENT_SYSTEM_PROMPT
-from src.states.agent_state import SubAgentState
+from src.agents.researchagent.agent_tools import research_agent_tools
 from src.config.logger import get_logger
+from src.llms import llm_factory
+from src.prompts import load_prompt
+from src.states.main_state import MainState
 
-logger = get_logger("agents.search_agent")
+logger = get_logger("agents.research_agent")
 
-MAX_ITERATIONS = 10
+llm = llm_factory.create("GEMMA_4_31B", temperature=0.3, max_tokens=1024 * 4)
+system_prompt = load_prompt("research_agent")
 
-
-def _get_llm():
-    """Lazy LLM initialization via central factory."""
-    return llm_factory.create("GEMINI_FLASH", temperature=0).bind_tools(search_agent_tools)
-
-
-# ── Graph nodes ──────────────────────────────────────────────────────
-
-def agent_node(state: SubAgentState) -> dict:
-    """Invoke the LLM with the current message history."""
-    llm = _get_llm()
-    messages = list(state["messages"])
-    if not any(isinstance(m, SystemMessage) for m in messages):
-        task_desc = state.get("task", {}).get("description", "")
-        sys_msg = SystemMessage(
-            content=SEARCH_AGENT_SYSTEM_PROMPT + f"\n\nCurrent task: {task_desc}"
-        )
-        messages = [sys_msg] + messages
-
-    response = llm.invoke(messages)
-    return {
-        "messages": [response],
-        "iterations": state.get("iterations", 0) + 1,
-    }
+research_agent_graph = create_agent(
+    model=llm,
+    tools=research_agent_tools,
+    system_prompt=system_prompt,
+)
 
 
-def should_continue(state: SubAgentState) -> str:
-    """Decide: continue with tools or finish."""
-    if state.get("iterations", 0) >= MAX_ITERATIONS:
-        return "finish"
-    last = state["messages"][-1]
-    if isinstance(last, AIMessage) and last.tool_calls:
-        return "tools"
-    return "finish"
+async def run_research_node(state: MainState) -> dict:
+    """Entry point when invoked by the supervisor.
 
+    Reads the current_task from MainState, runs the research agent,
+    and returns the result.
+    """
+    current_task = state.get("current_task", {})
+    task_desc = current_task.get("task_description", "No task provided.")
+    input_context = current_task.get("input_context", "")
 
-def finish_node(state: SubAgentState) -> dict:
-    """Extract the final result from the last message."""
-    last = state["messages"][-1]
-    result = last.content if isinstance(last, AIMessage) else str(last)
-    return {"status": "done", "result": result}
+    task_prompt = f"""
+    - Research Task: {task_desc}
+    - Additional Context: {input_context}
+    """
 
-
-# ── Build graph ──────────────────────────────────────────────────────
-
-def build_search_agent_graph():
-    graph = StateGraph(SubAgentState)
-
-    graph.add_node("agent", agent_node)
-    graph.add_node("tools", ToolNode(search_agent_tools))
-    graph.add_node("finish", finish_node)
-
-    graph.add_edge(START, "agent")
-    graph.add_conditional_edges("agent", should_continue, {
-        "tools": "tools",
-        "finish": "finish",
+    result = await research_agent_graph.ainvoke({
+        "messages": [HumanMessage(content=task_prompt)],
     })
-    graph.add_edge("tools", "agent")
-    graph.add_edge("finish", END)
 
-    return graph.compile()
-
-
-search_agent_graph = build_search_agent_graph()
+    final_output = result["messages"][-1].content
+    logger.info("Research agent finished: %s", final_output[:200])
+    return {
+        "messages": [AIMessage(content=f"**Research Agent Complete:**\n{final_output}")],
+    }
