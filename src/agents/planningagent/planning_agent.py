@@ -63,13 +63,15 @@ planning_agent = create_agent(
 )
 
 
-async def planning_node(state: MainState) -> dict:
+def planning_node(state: MainState) -> dict:
+    logger.info("Data is in planning node")
     """Analyze task, use tools to research, and produce a structured plan."""
-    
-    messages = state.get("messages", []) +[
+
+    messages = state.get("messages", []) + [
         HumanMessage(content=f"Task: {state['user_query']}")
     ]
-    result = await planning_agent.ainvoke({"messages": messages})
+    result = planning_agent.invoke({"messages": messages})
+    logger.info("planning result: %s", result)
     plan: PlanOutput = result["structured_response"]
     
     logger.info("Plan generated: %s (%d steps)", plan.task_summary, len(plan.action_checklist))

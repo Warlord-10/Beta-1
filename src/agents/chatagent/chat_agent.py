@@ -4,13 +4,16 @@ Responsibilities:
   1. Answer directly (greetings, general knowledge).
   2. Use read-only tools (file inspection, scheduler, memory, safe shell).
   3. Delegate complex multi-step work to the planning workflow via
-     `delegate_to_planner`, which kicks the main orchestrator graph
-     and feeds the final result back through `dummy_enqueue_result`.
+     ``delegate_to_planner``, which enqueues the task for the
+     ``workflow-loop`` thread and returns immediately; the workflow's
+     final response is fed back to the user through ``IO.push_to_llm``.
+
+Runs inside the pipeline's ``chat-loop`` thread. Everything here — the
+agent itself, its tools, the pregel stream — is sync. Async tools are not
+supported (langgraph's ``ToolNode`` invokes them on a sync thread pool).
 """
 
 from __future__ import annotations
-
-import asyncio
 
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessageChunk, HumanMessage
@@ -18,10 +21,10 @@ from langchain_core.tools import tool
 from langchain_google_genai import HarmBlockThreshold, HarmCategory
 from langgraph.checkpoint.memory import InMemorySaver
 
+from src.config.events import GlobalEvents, GlobalQueues
 from src.config.logger import get_logger
 from src.llms import llm_factory
 from src.prompts import load_prompt
-from src.utils.io import IO
 from src.states.main_state import ChatState
 # Read-only file tools
 from src.tools.file_tools import (get_file_info, list_directory, read_file,
@@ -44,29 +47,17 @@ logger = get_logger("agents.chat_agent")
 
 
 @tool
-async def delegate_to_planner(task_summary: str) -> str:
+def delegate_to_planner(task_summary: str) -> str:
     """Delegate a complex task to the planning workflow.
 
     Use this when the user's request needs code writing, file modifications,
-    multi-step operations, or anything beyond inspection. Returns immediately
-    so chat stays responsive; the orchestrator runs in the background and
-    the final result is fed back via `dummy_enqueue_result`.
+    multi-step operations, or anything beyond inspection. Enqueues the task
+    for the ``workflow-loop`` thread (which processes one task at a time)
+    and returns immediately so chat stays responsive. The workflow's final
+    answer is fed back to the chat agent as the next user turn.
     """
-    # Imported lazily to avoid circular imports (workflow → chat agent tools).
-    from src.workflow import run_main_graph
-
-    io_unit = IO()
-
-    async def _run() -> None:
-        try:
-            final = await run_main_graph(task_summary)
-        except Exception as exc:
-            logger.exception("delegate_to_planner: workflow failed")
-            final = f"[delegation failed] {exc}"
-        
-        io_unit.push_to_llm(final)
-
-    asyncio.create_task(_run())
+    GlobalQueues.complex_task_queue.put(task_summary)
+    GlobalEvents.set_workflow_active(True)
     return f"DELEGATED: {task_summary}. I'll follow up when it's done."
 
 
@@ -99,20 +90,22 @@ CHAT_AGENT_TOOLS = [
 
 
 class ChatAgent:
+    """Tool-calling chat agent. Streamed synchronously by the chat-loop."""
+
     def __init__(self, config: dict):
         self.config = config
         self.checkpointer = InMemorySaver()
         self.llm = llm_factory.create(
-            "GEMMA_4_31B", 
-            temperature=1, 
-            max_tokens=512, 
+            "GEMMA_4_31B",
+            temperature=1,
+            max_tokens=512,
             safety_settings={
                 HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-            }, 
-            thinking_level="minimal"
+            },
+            thinking_level="minimal",
         )
         self.agent = create_agent(
             model=self.llm,
@@ -132,12 +125,47 @@ class ChatAgent:
         """Synchronous one-shot invoke (debug / non-streaming callers)."""
         return self.agent.invoke(self._turn_input(user_input), config=self.config)
 
+    def stream(self, user_input: str):
+        """Sync generator of ``(kind, text)`` tuples.
+
+        ``kind`` is ``"thinking"`` or ``"content"``. Pregel's sync stream is
+        used deliberately (the async stream returns 5xx on our backend, and
+        the chat-loop thread is dedicated to this work — no need to yield).
+        """
+        try:
+            for chunk in self.agent.stream(
+                self._turn_input(user_input),
+                config=self.config,
+                stream_mode="messages",
+                version="v2",
+            ):
+                token, _metadata = self._unpack_chunk(chunk)
+                if isinstance(token, AIMessageChunk):
+                    yield from self._split_token(token)
+        except Exception as e:
+            logger.exception("chat stream failed")
+            yield ("content", f"Got an error: {e}")
+
+    # ── pregel chunk plumbing ────────────────────────────────────────
+    @staticmethod
+    def _unpack_chunk(chunk):
+        """Normalise the two shapes pregel returns for stream_mode='messages'.
+
+        Older versions emit ``{"type": "messages", "data": (token, meta)}``;
+        newer versions emit the ``(token, meta)`` tuple directly.
+        """
+        if isinstance(chunk, tuple) and len(chunk) == 2:
+            return chunk
+        if isinstance(chunk, dict) and chunk.get("type") == "messages":
+            return chunk.get("data", (None, None))
+        return (None, None)
+
     @staticmethod
     def _split_token(token: AIMessageChunk):
-        """Yield (kind, text) parts from an AIMessageChunk.
+        """Yield ``(kind, text)`` parts from an ``AIMessageChunk``.
 
-        kind is "thinking" or "content". Handles both plain-string content and
-        the list-of-parts shape used when extended thinking is on.
+        Handles both the plain-string content and the list-of-parts shape
+        used when extended thinking is enabled.
         """
         content = token.content
         if isinstance(content, str):
@@ -154,46 +182,3 @@ class ChatAgent:
                     yield ("content", part["text"])
                 elif isinstance(part.get("text"), str) and part["text"]:
                     yield ("content", part["text"])
-
-    async def astream(self, user_input: str):
-        """Async stream of (kind, text) tuples — kind is "thinking" or "content"."""
-
-        try:
-            stream = self.agent.stream(
-                self._turn_input(user_input),
-                config=self.config,
-                stream_mode="messages",
-                version="v2",
-            )
-            for chunk in stream:
-                if chunk.get("type") != "messages":
-                    continue
-                token, _metadata = chunk.get("data", (None, None))
-                if isinstance(token, AIMessageChunk):
-                    for part in self._split_token(token):
-                        yield part
-                await asyncio.sleep(0)
-        except Exception as e:
-            logger.exception("chat astream failed")
-            yield ("content", f"Got an error: {e}")
-
-    def stream(self, user_input: str):
-        """Sync (kind, text) stream — mirror of astream for debugging."""
-
-        try:
-            stream = self.agent.stream(
-                self._turn_input(user_input),
-                config=self.config,
-                stream_mode="messages",
-                version="v2",
-            )
-            for chunk in stream:
-                if chunk.get("type") != "messages":
-                    continue
-                token, _metadata = chunk.get("data", (None, None))
-                if isinstance(token, AIMessageChunk):
-                    for part in self._split_token(token):
-                        yield part
-        except Exception as e:
-            logger.exception("chat stream failed")
-            yield ("content", f"Got an error: {e}")

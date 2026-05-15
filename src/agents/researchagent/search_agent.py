@@ -28,7 +28,7 @@ research_agent_graph = create_agent(
 )
 
 
-async def run_research_node(state: MainState) -> dict:
+def run_research_node(state: MainState) -> dict:
     """Entry point when invoked by the supervisor.
 
     Reads the current_task from MainState, runs the research agent,
@@ -43,7 +43,7 @@ async def run_research_node(state: MainState) -> dict:
     - Additional Context: {input_context}
     """
 
-    result = await research_agent_graph.ainvoke({
+    result = research_agent_graph.invoke({
         "messages": [HumanMessage(content=task_prompt)],
     })
 
