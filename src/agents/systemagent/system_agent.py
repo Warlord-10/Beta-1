@@ -22,6 +22,7 @@ from src.states.main_state import MainState
 from src.agents.systemagent.agent_tools import system_agent_tools
 from src.prompts import load_prompt
 from src.config.logger import get_logger
+from src.utils.errors import node_guard
 
 logger = get_logger("agents.system_agent")
 
@@ -37,6 +38,7 @@ all_system_tools.extend(file_tools)
 
 # ── Graph node ───────────────────────────────────────────────────────
 
+@node_guard("system_agent", "system_node")
 def system_node(state: MainState) -> dict:
     """ReAct-style system node — executes commands and file operations."""
     current_task = state.get("current_task", {})

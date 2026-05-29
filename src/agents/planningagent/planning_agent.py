@@ -20,6 +20,7 @@ from src.llms import llm_factory
 from src.states.main_state import MainState
 from src.prompts import load_prompt
 from src.config.logger import get_logger
+from src.utils.errors import node_guard
 from src.agents.planningagent.agent_tools import read_file, list_directory, search_content, search_files, change_directory
 
 
@@ -63,13 +64,13 @@ planning_agent = create_agent(
 )
 
 
-async def planning_node(state: MainState) -> dict:
+@node_guard("planner", "planning_node")
+def planning_node(state: MainState) -> dict:
     """Analyze task, use tools to research, and produce a structured plan."""
-    
-    messages = state.get("messages", []) +[
+    messages = state.get("messages", []) + [
         HumanMessage(content=f"Task: {state['user_query']}")
     ]
-    result = await planning_agent.ainvoke({"messages": messages})
+    result = planning_agent.invoke({"messages": messages})
     plan: PlanOutput = result["structured_response"]
     
     logger.info("Plan generated: %s (%d steps)", plan.task_summary, len(plan.action_checklist))

@@ -40,39 +40,6 @@ def accumulate_sentences(chunks):
         yield buffer
 
 
-async def accumulate_sentences_async(chunks):
-    """
-    chunks: async iterable of strings (LLM stream)
-    yields: complete sentences/phrases ready for TTS (async generator)
-    """
-    buffer = ""
-
-    async for chunk in chunks:
-        for char in chunk:
-            buffer += char
-            
-            # Hard break - always split
-            if char in (".", "!", "?"):
-                yield buffer
-                buffer = ""
-                await asyncio.sleep(0)
-            
-            # Soft break - only if buffer is large enough
-            elif char == "," and len(buffer) > 60:
-                yield buffer
-                buffer = ""
-                await asyncio.sleep(0)
-            
-            # Force break on space if too long
-            elif char == " " and len(buffer) > 120:
-                yield buffer
-                buffer = ""
-                await asyncio.sleep(0)
-
-    # Flush remaining
-    if buffer:
-        yield buffer
-
 def accumulate_phrases(chunks, soft_break_min: int = 30, hard_break_max: int = 120):
     """
     chunks: iterable of strings (LLM stream)

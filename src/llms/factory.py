@@ -39,6 +39,7 @@ def _build_openrouter(model: str, **kwargs: Any) -> BaseChatModel:
     from langchain_openrouter import ChatOpenRouter
     return ChatOpenRouter(model=model, **kwargs)
 
+
 def _build_nvidia(model: str, **kwargs: Any) -> BaseChatModel:
     from langchain_nvidia import ChatNVIDIA
     return ChatNVIDIA(model=model, **kwargs)
@@ -67,7 +68,7 @@ class LLMFactory:
         *,
         temperature: float = 0,
         max_tokens: int | None = None,
-        max_retries: int = 2,
+        max_retries: int = 6,
         callbacks: list | None = None,
         **extra: Any,
     ) -> BaseChatModel:

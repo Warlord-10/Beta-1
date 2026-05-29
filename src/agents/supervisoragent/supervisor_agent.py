@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
@@ -24,6 +24,7 @@ from src.config.logger import get_logger
 from src.llms import llm_factory
 from src.prompts import load_prompt
 from src.states.main_state import MainState
+from src.utils.errors import node_guard
 
 logger = get_logger("agents.supervisor")
 
@@ -62,7 +63,7 @@ def _finish(reason: str, iteration: int) -> dict:
     }
 
 
-async def _route_via_llm(state: MainState, pending_tasks: list[dict]) -> SupervisorRoutingOutput:
+def _route_via_llm(state: MainState, pending_tasks: list[dict]) -> SupervisorRoutingOutput:
     """Ask the LLM to pick the next task AND the agent to run it."""
     llm = llm_factory.create("GEMMA_4_31B", temperature=0, max_tokens=1024)
     structured_llm = llm.with_structured_output(SupervisorRoutingOutput)
@@ -76,7 +77,7 @@ async def _route_via_llm(state: MainState, pending_tasks: list[dict]) -> Supervi
 
     messages = [
         SystemMessage(content=load_prompt("supervisor_agent")),
-        SystemMessage(content=(
+        HumanMessage(content=(
             f"User Query: {state.get('user_query', '')}\n"
             f"Implementation Plan:\n{state.get('implementation_plan', '')}\n\n"
             f"Available Agents:\n{registry_prompt()}\n\n"
@@ -87,10 +88,11 @@ async def _route_via_llm(state: MainState, pending_tasks: list[dict]) -> Supervi
             f"`next_agent` MUST be one of {list(AGENT_REGISTRY)}."
         )),
     ]
-    return await structured_llm.ainvoke(messages)
+    return structured_llm.invoke(messages)
 
 
-async def supervisor_node(state: MainState) -> dict:
+@node_guard("supervisor", "supervisor_node")
+def supervisor_node(state: MainState) -> dict:
     iteration = state.get("iteration", 0) + 1
     completed_ids = {t["id"] for t in state.get("completed_tasks", [])}
     pending_tasks = [t for t in state.get("action_checklist", []) if t["id"] not in completed_ids]
@@ -104,7 +106,7 @@ async def supervisor_node(state: MainState) -> dict:
     if len(pending_tasks) == 1 and len(AGENT_REGISTRY) == 1:
         return _dispatch(pending_tasks[0], _DEFAULT_AGENT, iteration)
 
-    routing = await _route_via_llm(state, pending_tasks)
+    routing = _route_via_llm(state, pending_tasks)
     pending_by_id = {t["id"]: t for t in pending_tasks}
     chosen_task = pending_by_id.get(routing.next_task_id) or pending_tasks[0]
     chosen_agent = routing.next_agent if routing.next_agent in AGENT_REGISTRY else _DEFAULT_AGENT
@@ -119,14 +121,13 @@ async def supervisor_node(state: MainState) -> dict:
     return _dispatch(chosen_task, chosen_agent, iteration)
 
 
-async def coding_agent_wrapper(state: MainState) -> dict:
+@node_guard("supervisor", "coding_agent_wrapper")
+def coding_agent_wrapper(state: MainState) -> dict:
     """Invoke the coding sub-graph for the current task and mark it done."""
     from src.agents.codeagent import run_coding_node
 
     current_task = state["current_task"]
-    logger.info("Invoking coding agent for task: %s", current_task.get("id", "?"))
-
-    result = await run_coding_node(state)
+    result = run_coding_node(state)
 
     return {
         "messages": result.get("messages", [AIMessage(content="Task Completed Successfully")]),
@@ -134,14 +135,13 @@ async def coding_agent_wrapper(state: MainState) -> dict:
     }
 
 
-async def research_agent_wrapper(state: MainState) -> dict:
+@node_guard("supervisor", "research_agent_wrapper")
+def research_agent_wrapper(state: MainState) -> dict:
     """Invoke the research sub-graph for the current task and mark it done."""
     from src.agents.researchagent import run_research_node
 
     current_task = state["current_task"]
-    logger.info("Invoking research agent for task: %s", current_task.get("id", "?"))
-
-    result = await run_research_node(state)
+    result = run_research_node(state)
 
     return {
         "messages": result.get("messages", [AIMessage(content="Research Completed Successfully")]),

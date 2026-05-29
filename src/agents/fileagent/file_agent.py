@@ -20,6 +20,7 @@ from src.agents.fileagent.agent_tools import file_agent_tools
 from src.agents.fileagent.system_prompt import FILE_AGENT_SYSTEM_PROMPT
 from src.states.agent_state import SubAgentState
 from src.config.logger import get_logger
+from src.utils.errors import node_guard
 
 logger = get_logger("agents.file_agent")
 
@@ -33,6 +34,7 @@ def _get_llm():
 
 # ── Graph nodes ──────────────────────────────────────────────────────
 
+@node_guard("file_agent", "agent_node")
 def agent_node(state: SubAgentState) -> dict:
     """Invoke the LLM with the current message history."""
     llm = _get_llm()
@@ -66,6 +68,7 @@ def should_continue(state: SubAgentState) -> str:
     return "finish"
 
 
+@node_guard("file_agent", "finish_node")
 def finish_node(state: SubAgentState) -> dict:
     """Extract the final result from the last message."""
     last = state["messages"][-1]

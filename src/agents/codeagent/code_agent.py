@@ -20,6 +20,7 @@ from src.agents.codeagent.agent_tools import code_tools, file_tools
 from langchain.agents import create_agent
 from src.prompts import load_prompt
 from src.config.logger import get_logger
+from src.utils.errors import node_guard
 
 logger = get_logger("agents.code_agent")
 
@@ -35,7 +36,8 @@ coding_agent_graph = create_agent(
 )
 
 
-async def run_coding_node(state: MainState) -> dict:
+@node_guard("coding_agent", "run_coding_node")
+def run_coding_node(state: MainState) -> dict:
     current_task = state.get("current_task", {})
     task_desc = current_task.get("task_description", "No task provided.")
     input_context = current_task.get("input_context", "")
@@ -48,7 +50,7 @@ async def run_coding_node(state: MainState) -> dict:
     
     local_messages =[HumanMessage(content=task_prompt)]
 
-    result = await coding_agent_graph.ainvoke({
+    result = coding_agent_graph.invoke({
         "messages": local_messages
     })
 

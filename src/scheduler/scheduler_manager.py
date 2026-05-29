@@ -25,7 +25,6 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from src.scheduler.models import TaskRecord
 from src.scheduler.task_store import TaskStore
 from src.config.logger import get_logger
-from src.workflow import main_graph
 from src.utils.io import IO
 
 logger = get_logger("scheduler.manager")
