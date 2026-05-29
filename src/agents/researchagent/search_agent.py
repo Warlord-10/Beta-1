@@ -15,6 +15,7 @@ from src.config.logger import get_logger
 from src.llms import llm_factory
 from src.prompts import load_prompt
 from src.states.main_state import MainState
+from src.utils.errors import node_guard
 
 logger = get_logger("agents.research_agent")
 
@@ -28,6 +29,7 @@ research_agent_graph = create_agent(
 )
 
 
+@node_guard("research_agent", "run_research_node")
 def run_research_node(state: MainState) -> dict:
     """Entry point when invoked by the supervisor.
 

@@ -44,9 +44,14 @@ from src.voice import get_tts_engine
 logger = get_logger("pipeline")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Listener
-# ─────────────────────────────────────────────────────────────────────────────
+# Cap for chat input/output logging — long bot replies otherwise drown the log.
+_LOG_TRUNCATE = 600
+
+
+def _summarise(text: str, limit: int = _LOG_TRUNCATE) -> str:
+    text = (text or "").replace("\n", " ").strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
 
 class PipelineListener:
     """Override the callbacks you care about; defaults are no-ops.
@@ -73,10 +78,6 @@ _INSTANCE: "Pipeline | None" = None
 def get_pipeline() -> "Pipeline | None":
     return _INSTANCE
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Pipeline
-# ─────────────────────────────────────────────────────────────────────────────
 
 class Pipeline:
     """Headless chat pipeline: queues in, listener callbacks out."""
@@ -160,7 +161,6 @@ class Pipeline:
             except queue.Empty:
                 return
 
-    # ── chat-loop (sync) ─────────────────────────────────────────────
     def _chat_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
@@ -173,33 +173,45 @@ class Pipeline:
 
     def _handle_turn(self, user_message: str) -> None:
         self._drain_llm_queue()
+        logger.info("chat input ← %s", _summarise(user_message))
         self._safe_call(self._listener.on_turn_start, name="on_turn_start")
+
+        thinking_buf: list[str] = []
+        content_buf: list[str] = []
 
         def content_only(stream):
             for kind, text in stream:
                 if kind == "thinking":
+                    thinking_buf.append(text)
                     self._safe_call(
                         self._listener.on_thinking, text, name="on_thinking"
                     )
                     continue
+                content_buf.append(text)
                 yield text
 
         token_stream = self._chat_agent.stream(user_message)
+        aborted = False
         for sentence in accumulate_sentences(content_only(token_stream)):
             if GlobalEvents.is_user_speaking():
                 logger.debug("Barge-in — aborting LLM stream")
                 self._drain_llm_queue()
-                return
+                aborted = True
+                break
             if GlobalEvents.is_tts_enabled():
                 GlobalQueues.llm_chunk_queue.put(sentence)
             self._safe_call(self._listener.on_chunk, sentence, name="on_chunk")
 
-        self._safe_call(self._listener.on_turn_end, name="on_turn_end")
+        if thinking_buf:
+            logger.info("chat thinking … %s", _summarise("".join(thinking_buf)))
+        suffix = " [aborted by barge-in]" if aborted else ""
+        logger.info("chat output → %s%s", _summarise("".join(content_buf)), suffix)
+
+        if not aborted:
+            self._safe_call(self._listener.on_turn_end, name="on_turn_end")
 
     # ── workflow-loop (sync; blocking graph execution) ───────────────
     def _workflow_loop(self) -> None:
-        # Lazy import — workflow imports from pipeline indirectly through the
-        # chat agent's tool layer.
         from src.workflow import run_main_graph
 
         while not self._stop_event.is_set():

@@ -26,6 +26,7 @@ from src.agents.supervisoragent import supervisor_agent_graph
 from src.config.logger import get_logger
 from src.config.settings import SETTINGS
 from src.states.main_state import MainState, initial_main_state
+from src.utils.errors import NodeFailure, format_app_traceback, node_guard
 
 logger = get_logger("workflow")
 
@@ -42,10 +43,7 @@ _APPROVE_VERDICTS = {"", "approve", "yes", "y", "ok"}
 InterruptHandler = Callable[[dict], str]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Nodes
-# ─────────────────────────────────────────────────────────────────────────────
-
+@node_guard("workflow", "plan_review")
 def plan_review_node(state: MainState) -> dict:
     """Pause for human approval after planning.
 
@@ -88,6 +86,7 @@ def route_after_review(state: MainState) -> str:
     return "rejected" if state.get("next_agent") == _REVIEW_REJECTED else "approved"
 
 
+@node_guard("workflow", "format_response")
 def format_response_node(state: MainState) -> dict:
     """Synthesize a final response string from the completed tasks."""
     completed = state.get("completed_tasks", [])
@@ -106,10 +105,6 @@ def format_response_node(state: MainState) -> dict:
         "messages": [AIMessage(content=summary)],
     }
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Graph
-# ─────────────────────────────────────────────────────────────────────────────
 
 def build_main_graph():
     graph = StateGraph(MainState)
@@ -130,13 +125,8 @@ def build_main_graph():
 
     return graph.compile(checkpointer=InMemorySaver())
 
-
 main_graph = build_main_graph()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Runner
-# ─────────────────────────────────────────────────────────────────────────────
 
 def run_main_graph(
     task_summary: str,
@@ -150,22 +140,53 @@ def run_main_graph(
     payload and its return value is fed back via ``Command(resume=...)``.
     With no handler, interrupts auto-approve (empty resume).
 
+    On any node failure the session checkpoint is dropped and a single
+    ``<Agent:Node, ERROR: msg>`` string is returned — the chat agent
+    surfaces that to the user. No retries, no fallbacks.
+
     Designed to be called from a dedicated worker thread — it blocks the
     whole way through, which is fine because graph execution is the only
     thing that thread does.
     """
-    config = {"configurable": {"thread_id": str(uuid.uuid4())}}
+    thread_id = str(uuid.uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
     graph_input: Any = initial_main_state(task_summary, cwd=cwd)
+    logger.info("workflow start (thread_id=%s) task=%r", thread_id, task_summary)
 
-    while True:
-        result = main_graph.invoke(graph_input, config=config)
-        interrupts = result.get("__interrupt__") if isinstance(result, dict) else None
-        if not interrupts:
-            return result.get("final_response", "") if isinstance(result, dict) else ""
+    try:
+        while True:
+            result = main_graph.invoke(graph_input, config=config)
+            interrupts = (
+                result.get("__interrupt__") if isinstance(result, dict) else None
+            )
+            if not interrupts:
+                final = result.get("final_response", "") if isinstance(result, dict) else ""
+                logger.info("workflow done (thread_id=%s)", thread_id)
+                return final
 
-        payload = _interrupt_payload(interrupts[0])
-        verdict = on_interrupt(payload) if on_interrupt is not None else ""
-        graph_input = Command(resume=verdict)
+            payload = _interrupt_payload(interrupts[0])
+            verdict = on_interrupt(payload) if on_interrupt is not None else ""
+            graph_input = Command(resume=verdict)
+    except NodeFailure as nf:
+        logger.error("workflow halted: %s", nf.message)
+        return nf.message
+    except Exception as exc:
+        # An exception that escaped the per-node guards — wrap and surface.
+        logger.error(
+            "workflow crashed outside any node guard — %s\n%s",
+            exc, format_app_traceback(),
+        )
+        return f"<workflow:run_main_graph, ERROR: {exc}>"
+    finally:
+        _delete_session(thread_id)
+
+
+def _delete_session(thread_id: str) -> None:
+    """Drop the InMemorySaver checkpoint for this run."""
+    try:
+        main_graph.checkpointer.delete_thread(thread_id)
+    except Exception:
+        logger.debug("session cleanup failed for %s", thread_id, exc_info=True)
 
 
 def _interrupt_payload(interrupt_obj) -> dict:

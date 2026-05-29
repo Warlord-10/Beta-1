@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
@@ -24,6 +24,7 @@ from src.config.logger import get_logger
 from src.llms import llm_factory
 from src.prompts import load_prompt
 from src.states.main_state import MainState
+from src.utils.errors import node_guard
 
 logger = get_logger("agents.supervisor")
 
@@ -76,7 +77,7 @@ def _route_via_llm(state: MainState, pending_tasks: list[dict]) -> SupervisorRou
 
     messages = [
         SystemMessage(content=load_prompt("supervisor_agent")),
-        SystemMessage(content=(
+        HumanMessage(content=(
             f"User Query: {state.get('user_query', '')}\n"
             f"Implementation Plan:\n{state.get('implementation_plan', '')}\n\n"
             f"Available Agents:\n{registry_prompt()}\n\n"
@@ -90,8 +91,8 @@ def _route_via_llm(state: MainState, pending_tasks: list[dict]) -> SupervisorRou
     return structured_llm.invoke(messages)
 
 
+@node_guard("supervisor", "supervisor_node")
 def supervisor_node(state: MainState) -> dict:
-    logger.info("currently in supervisor node")
     iteration = state.get("iteration", 0) + 1
     completed_ids = {t["id"] for t in state.get("completed_tasks", [])}
     pending_tasks = [t for t in state.get("action_checklist", []) if t["id"] not in completed_ids]
@@ -120,13 +121,12 @@ def supervisor_node(state: MainState) -> dict:
     return _dispatch(chosen_task, chosen_agent, iteration)
 
 
+@node_guard("supervisor", "coding_agent_wrapper")
 def coding_agent_wrapper(state: MainState) -> dict:
     """Invoke the coding sub-graph for the current task and mark it done."""
     from src.agents.codeagent import run_coding_node
 
     current_task = state["current_task"]
-    logger.info("Invoking coding agent for task: %s", current_task.get("id", "?"))
-
     result = run_coding_node(state)
 
     return {
@@ -135,13 +135,12 @@ def coding_agent_wrapper(state: MainState) -> dict:
     }
 
 
+@node_guard("supervisor", "research_agent_wrapper")
 def research_agent_wrapper(state: MainState) -> dict:
     """Invoke the research sub-graph for the current task and mark it done."""
     from src.agents.researchagent import run_research_node
 
     current_task = state["current_task"]
-    logger.info("Invoking research agent for task: %s", current_task.get("id", "?"))
-
     result = run_research_node(state)
 
     return {

@@ -49,16 +49,17 @@ logger = get_logger("agents.chat_agent")
 @tool
 def delegate_to_planner(task_summary: str) -> str:
     """Delegate a complex task to the planning workflow.
-
-    Use this when the user's request needs code writing, file modifications,
-    multi-step operations, or anything beyond inspection. Enqueues the task
-    for the ``workflow-loop`` thread (which processes one task at a time)
-    and returns immediately so chat stays responsive. The workflow's final
-    answer is fed back to the chat agent as the next user turn.
+        Args: 
+            task_summary: Summary of the task to be delegated
+        Returns: 
+            Confirmation message of the delegated task.
     """
+
     GlobalQueues.complex_task_queue.put(task_summary)
     GlobalEvents.set_workflow_active(True)
-    return f"DELEGATED: {task_summary}. I'll follow up when it's done."
+    return f"""The task has been delegated, final update will be provided once it is completed.
+    Tell the user that you will update him once this task is completed.
+    """
 
 
 CHAT_AGENT_TOOLS = [
