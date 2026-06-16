@@ -38,3 +38,6 @@ class VoiceActivityDetector:
         except Exception as e:
             logger.error(f"VAD Error: {e}")
             return False
+
+    def change_threshold(self, threshold: float):
+        self.threshold = threshold

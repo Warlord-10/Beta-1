@@ -81,7 +81,7 @@ class ChatInput(Input):
         try:
             from src.config.events import GlobalEvents
 
-            speaking = GlobalEvents.is_user_speaking()
+            speaking = GlobalEvents.CheckUserBargeIn()
         except Exception:
             speaking = False
         self._frame += 1

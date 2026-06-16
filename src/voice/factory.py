@@ -2,20 +2,11 @@
 
 from typing import Dict, Any
 from src.config.logger import get_logger
-from src.voice.base import BaseTTS
+from src.voice.base_provider import BaseTTS
 
 logger = get_logger("voice.factory")
 
-def get_tts_engine(provider: str, config: Dict[str, Any]) -> BaseTTS:
-    """Instantiate and return the configured TTS engine.
-    
-    Args:
-        provider: String name of the provider ("kokoro", "supertonic").
-        config: Dictionary of kwargs for the provider parameters.
-        
-    Returns:
-        An instance of BaseTTS.
-    """
+def get_tts_engine(provider: str = "kokoro", config: Dict[str, Any] = {}) -> BaseTTS:
     provider = provider.lower().strip()
     
     if provider == "supertonic":

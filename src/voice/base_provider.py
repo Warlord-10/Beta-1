@@ -19,13 +19,8 @@ class BaseTTS(ABC):
             A corresponding numpy array representing the audio wave, or None if failed.
         """
         pass
-
+    
     @abstractmethod
-    def play(self, text: str, block: bool = True) -> None:
-        """Synthesize and play the audio through system speakers.
-        
-        Args:
-            text: The text string to synthesize and play.
-            block: If True, blocks until playback finishes.
-        """
+    def _warmup(self) -> None:
+        """Force TTS model loading and first inference at startup."""
         pass

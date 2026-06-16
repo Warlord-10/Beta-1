@@ -9,9 +9,9 @@
   "TTS_CONFIG": {
     "supertonic": {
       "voice_name": "F1",
-      "sample_rate": 24000,
+      "sample_rate": 44100,
       "speed": 1.3,
-      "total_steps": 30
+      "total_steps": 8
     },
     "kokoro": {
       "voice_name": "af_heart",

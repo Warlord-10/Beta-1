@@ -13,7 +13,7 @@ from src.asr.factory import get_asr_engine
 # from src.asr.noise_suppressor import NoiseSuppressor
 from src.asr.vad import VoiceActivityDetector
 from src.config.logger import get_logger
-from src.config.events import GlobalEvents
+from src.config.global_events import *
 from src.asr.aec import aec
 
 logger = get_logger("asr.stream")
@@ -34,7 +34,7 @@ class ASRService:
         self.vad = VoiceActivityDetector(threshold=0.7)
         self.asr = get_asr_engine()
 
-        self._audio_queue: queue.Queue = queue.Queue()
+        self.UserAudioQueue = queue.Queue()
         self._speech_buffer: list = []
         self._silence_chunks: int = 0
 
@@ -51,21 +51,34 @@ class ASRService:
         self._speech_buffer.clear()
 
         if text.strip():
-            print("Final transcript: %r", text)
+            print("Final transcript: ", text)
             return text
 
-    def _is_speech(self, chunk: np.ndarray) -> bool:
+    def _is_speech_detected(self, chunk: np.ndarray) -> bool:
         return self.vad.contains_speech(chunk, self.sample_rate)
 
     def _audio_callback(self, indata, frames, time_info, status):
         if status:
             logger.warning("Audio stream status: %s", status)
         chunk_for_aec = indata[:, 0].copy()
-        self._audio_queue.put(aec.process_mic(chunk_for_aec))
+        self.UserAudioQueue.put(aec.process_mic(chunk_for_aec))
 
     def _reset_silence_chunks(self):
         self._silence_chunks = 0
 
+    def _can_process_partial_transcript(self):
+        pass
+
+    def _can_process_complete_transcript(self):
+        pass
+
+    def set_vad_threshold(self, threshold: float):
+        logger.info("VAD threshold changed to: %f", threshold)
+        self.vad.change_threshold(threshold)
+
+    def reset_vad_threshold(self):
+        logger.info("VAD threshold reset to: 0.7")
+        self.vad.change_threshold(0.7)
 
     def stream(self):
         """
@@ -78,7 +91,7 @@ class ASRService:
         self._silence_chunks = 0
 
         while True:
-            GlobalEvents.is_asr_enabled_event.wait()
+            is_asr_enabled_event.wait()
 
             with sd.InputStream(
                 samplerate=self.sample_rate,
@@ -91,9 +104,9 @@ class ASRService:
                 current_speech_chunk = 0
                 vad_buffer = []
 
-                while GlobalEvents.is_asr_enabled():
+                while IsASREnabled():
                     try:
-                        chunk = self._audio_queue.get()
+                        chunk = self.UserAudioQueue.get()
                     except queue.Empty:
                         continue
 
@@ -101,6 +114,7 @@ class ASRService:
                     if chunk is None:
                         break
 
+                    # Check if enough chunks are present for VAD
                     vad_buffer.append(chunk)
                     if len(vad_buffer) < 25:
                         continue
@@ -108,12 +122,11 @@ class ASRService:
                     chunk = np.concatenate(vad_buffer)
                     vad_buffer.clear()
 
-                    is_speech = self._is_speech(chunk)
                     self._speech_buffer.append(chunk)
 
-                    if is_speech:
+                    if self._is_speech_detected(chunk):
                         print("detected speech")
-                        GlobalEvents.set_user_speaking(True)
+                        ToggleUserBargeIn(True)
                         self._reset_silence_chunks()
                         current_speech_chunk += 1
                     else:
@@ -131,5 +144,5 @@ class ASRService:
 
                         # Flush any remaining audio
                         self._speech_buffer.clear()
-                        GlobalEvents.set_user_speaking(False)
-                        yield " "
+                        ToggleUserBargeIn(False)
+                        yield None

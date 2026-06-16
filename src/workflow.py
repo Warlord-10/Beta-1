@@ -128,29 +128,10 @@ def build_main_graph():
 main_graph = build_main_graph()
 
 
-def run_main_graph(
-    task_summary: str,
-    *,
-    cwd: str = "/",
-    on_interrupt: Optional[InterruptHandler] = None,
-) -> str:
-    """Run the planning → supervisor → format_response pipeline (blocking).
-
-    If a node calls ``interrupt(...)``, ``on_interrupt`` is invoked with the
-    payload and its return value is fed back via ``Command(resume=...)``.
-    With no handler, interrupts auto-approve (empty resume).
-
-    On any node failure the session checkpoint is dropped and a single
-    ``<Agent:Node, ERROR: msg>`` string is returned — the chat agent
-    surfaces that to the user. No retries, no fallbacks.
-
-    Designed to be called from a dedicated worker thread — it blocks the
-    whole way through, which is fine because graph execution is the only
-    thing that thread does.
-    """
+def run_main_graph(task_summary: str, on_interrupt: Optional[InterruptHandler] = None) -> str:
     thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
-    graph_input: Any = initial_main_state(task_summary, cwd=cwd)
+    graph_input: Any = initial_main_state(task_summary)
     logger.info("workflow start (thread_id=%s) task=%r", thread_id, task_summary)
 
     try:

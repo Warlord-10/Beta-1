@@ -1,30 +1,3 @@
-"""Headless chat pipeline.
-
-Owns the chat agent, the workflow runner, ASR, TTS, and the scheduler behind
-a small listener API so any frontend (TUI, CLI, web) can drive it without
-knowing the internals.
-
-Threading model — **all sync, no asyncio anywhere**:
-  - main thread:    the frontend (Textual TUI).
-  - chat-loop:      consumes ``input_queue``; runs the chat agent's sync
-                    ``.stream()`` and forwards chunks / thinking to the
-                    listener and TTS queue.
-  - workflow-loop:  consumes ``complex_task_queue`` (populated by the
-                    ``delegate_to_planner`` tool); runs the orchestrator
-                    graph one task at a time via the sync
-                    ``main_graph.invoke(...)``. All sub-agents
-                    (planner, supervisor, code, research, file, system)
-                    are sync and call ``llm.invoke`` — async LLM calls
-                    were reliably 500ing on our backend.
-  - asr-worker:     daemon thread, sync (sounddevice input + ASR engine).
-  - tts-worker:     daemon thread, sync (sounddevice output + TTS engine).
-
-Frontend integration:
-  Subclass :class:`PipelineListener` (override only what you need) and
-  attach it via :meth:`Pipeline.attach_listener`. Callbacks may fire from
-  any worker thread — marshal to your UI thread inside the implementation.
-"""
-
 from __future__ import annotations
 
 import queue
@@ -33,13 +6,14 @@ import uuid
 
 from src.agents.chatagent.chat_agent import ChatAgent
 from src.asr.asr_service import ASRService
-from src.config.events import GlobalEvents, GlobalQueues
 from src.config.logger import get_logger
 from src.config.settings import SETTINGS
 from src.scheduler.scheduler_manager import SchedulerManager
 from src.utils.io import IO
 from src.utils.text_utils import accumulate_sentences, clean_text
-from src.voice import get_tts_engine
+from src.voice.tts_service import TTSService
+from src.config.global_events import *
+from src.config.global_queues import *
 
 logger = get_logger("pipeline")
 
@@ -92,12 +66,10 @@ class Pipeline:
         self._chat_agent = ChatAgent(
             config={"configurable": {"thread_id": str(uuid.uuid4())}}
         )
-        self._tts = get_tts_engine(
-            SETTINGS.TTS_PROVIDER,
-            SETTINGS.TTS_CONFIG.get(SETTINGS.TTS_PROVIDER, {}),
-        )
-        self._asr_service = ASRService()
-        self.scheduler = SchedulerManager()
+
+        self._tts = TTSService()
+        self._asr = ASRService()
+        self._scheduler = SchedulerManager()
 
         self._listener: PipelineListener = PipelineListener()
         self._threads: list[threading.Thread] = []
@@ -115,12 +87,12 @@ class Pipeline:
 
     def submit_plan_review(self, response: str) -> None:
         """Resolve a pending plan-review interrupt with the user's verdict."""
-        GlobalQueues.plan_review_response_queue.put(response)
+        PlanReviewResponseQueue.put(response)
 
     def set_audio_enabled(self, enabled: bool) -> None:
         """Gate mic capture and TTS playback together."""
-        GlobalEvents.set_asr_enabled(enabled)
-        GlobalEvents.set_tts_enabled(enabled)
+        ToggleASR(enabled)
+        ToggleTTS(enabled)
 
     def start(self) -> None:
         """Spin up ASR, TTS, chat, and workflow threads.
@@ -129,10 +101,10 @@ class Pipeline:
         :meth:`set_audio_enabled` (the TUI does this on live mode).
         """
         self.set_audio_enabled(False)
-        self._spawn(self._asr_loop, "asr-worker")
-        self._spawn(self._tts.stream, "tts-worker")
-        self._spawn(self._chat_loop, "chat-loop")
-        self._spawn(self._workflow_loop, "workflow-loop")
+        self._SpawnThread(self._asr_loop, "asr-worker")
+        self._SpawnThread(self._tts.stream, "tts-worker")
+        self._SpawnThread(self._ChatLoop, "chat-loop")
+        self._SpawnThread(self._workflow_loop, "workflow-loop")
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -142,7 +114,7 @@ class Pipeline:
             logger.exception("scheduler shutdown failed")
 
     # ── Internals ─────────────────────────────────────────────────────
-    def _spawn(self, target, name: str) -> None:
+    def _SpawnThread(self, target, name: str) -> None:
         t = threading.Thread(target=target, name=name, daemon=True)
         t.start()
         self._threads.append(t)
@@ -153,26 +125,16 @@ class Pipeline:
         except Exception:
             logger.exception("%s listener callback failed", name)
 
-    @staticmethod
-    def _drain_llm_queue() -> None:
-        while True:
-            try:
-                GlobalQueues.llm_chunk_queue.get_nowait()
-            except queue.Empty:
-                return
-
-    def _chat_loop(self) -> None:
+    def _ChatLoop(self) -> None:
         while not self._stop_event.is_set():
             try:
-                user_message = GlobalQueues.input_queue.get(
-                    timeout=self._QUEUE_POLL_S
-                )
+                user_message = self.io_unit.get_from_llm()
             except queue.Empty:
                 continue
-            self._handle_turn(user_message)
+            self._HandleTurn(user_message)
 
-    def _handle_turn(self, user_message: str) -> None:
-        self._drain_llm_queue()
+    def _HandleTurn(self, user_message: str) -> None:
+        DrainLLMQueue()
         logger.info("chat input ← %s", _summarise(user_message))
         self._safe_call(self._listener.on_turn_start, name="on_turn_start")
 
@@ -192,15 +154,20 @@ class Pipeline:
 
         token_stream = self._chat_agent.stream(user_message)
         aborted = False
+
+        self._asr_service.set_vad_threshold(0.9)
+
         for sentence in accumulate_sentences(content_only(token_stream)):
-            if GlobalEvents.is_user_speaking():
+            if GlobalEvents.CheckUserBargeIn():
                 logger.debug("Barge-in — aborting LLM stream")
-                self._drain_llm_queue()
+                DrainLLMQueue()
                 aborted = True
                 break
-            if GlobalEvents.is_tts_enabled():
+            if GlobalEvents.IsTTSEnabled():
                 GlobalQueues.llm_chunk_queue.put(sentence)
             self._safe_call(self._listener.on_chunk, sentence, name="on_chunk")
+
+        self._asr_service.reset_vad_threshold()
 
         if thinking_buf:
             logger.info("chat thinking … %s", _summarise("".join(thinking_buf)))
@@ -212,42 +179,30 @@ class Pipeline:
 
     # ── workflow-loop (sync; blocking graph execution) ───────────────
     def _workflow_loop(self) -> None:
-        from src.workflow import run_main_graph
+
 
         while not self._stop_event.is_set():
             try:
-                task_summary = GlobalQueues.complex_task_queue.get(
-                    timeout=self._QUEUE_POLL_S
-                )
+                task_summary = ComplexTaskQueue.get(timeout=1)
             except queue.Empty:
                 continue
 
-            GlobalEvents.set_workflow_active(True)
             try:
-                final = run_main_graph(
-                    task_summary,
-                    on_interrupt=self._handle_workflow_interrupt,
-                )
+                ToggleWorkflow(True)
+                final = run_main_graph(task_summary, on_interrupt=self._handle_workflow_interrupt)
             except Exception:
                 logger.exception("workflow run failed")
                 final = "[workflow failed]"
             finally:
-                GlobalEvents.set_workflow_active(False)
+                ToggleWorkflow(False)
 
-            # Surface the result as another input turn so the chat agent
-            # can phrase it for the user.
             self.io_unit.push_to_llm(final)
 
     def _handle_workflow_interrupt(self, payload: dict) -> str:
-        """Bridge a graph interrupt to the user via the listener + queue.
-
-        Called on the workflow-loop thread; blocks until the TUI calls
-        :meth:`submit_plan_review`.
-        """
         self._safe_call(
             self._listener.on_plan_review, payload, name="on_plan_review"
         )
-        return GlobalQueues.plan_review_response_queue.get()
+        return PlanReviewResponseQueue.get()
 
     # ── asr-worker ────────────────────────────────────────────────────
     def _asr_loop(self) -> None:
@@ -255,7 +210,7 @@ class Pipeline:
         for text_chunk in self._asr_service.stream():
             if text_chunk:
                 full_text += f" {text_chunk}"
-            if GlobalEvents.is_user_speaking() or not full_text.strip():
+            if GlobalEvents.CheckUserBargeIn() or not full_text.strip():
                 continue
             msg = clean_text(full_text)
             full_text = ""
@@ -263,3 +218,91 @@ class Pipeline:
                 self._listener.on_user_message, msg, name="on_user_message"
             )
             self.submit(msg)
+
+
+class Pipeline_V2:
+    def __init__(self) -> None:
+        self.io_unit = IO()
+
+        self._stop_event = threading.Event()
+        self._chat_agent = ChatAgent(
+            config={"configurable": {"thread_id": str(uuid.uuid4())}}
+        )
+
+        self._tts = TTSService(provider="kokoro", config={"voice_name": "af_heart", "speed": 1.3})
+        self._asr = ASRService()
+        self._scheduler = SchedulerManager()
+
+        self._listener: PipelineListener = PipelineListener()
+        self._threads: list[threading.Thread] = []
+
+    def _SpawnThread(self, target, name: str) -> None:
+        t = threading.Thread(target=target, name=name, daemon=True)
+        t.start()
+        self._threads.append(t)
+
+    def start(self):
+        self._SpawnThread(self.ASRLoop, "asr-worker")
+        self._SpawnThread(self._tts.stream, "tts-worker")
+        self._SpawnThread(self.ChatLoop, "chat-loop")
+        self._SpawnThread(self.WorkflowLoop, "workflow-loop")
+
+        ToggleASR(True)
+        ToggleTTS(True)
+
+    def ChatLoop(self):
+        while True:
+            try:
+                user_msg = self.io_unit.get_from_llm()
+                self.CallChatAgent(user_msg)
+            except queue.Empty:
+                continue
+
+    def CallChatAgent(self, user_msg):
+        print("Got a new msg: ", user_msg)
+        response_stream = self._chat_agent.stream(user_msg)
+
+        self._asr.set_vad_threshold(0.9)
+        
+        for res_chunk in accumulate_sentences(response_stream):
+            print("res_chunk: ", res_chunk)
+            LLMChunkQueue.put(clean_text(res_chunk))
+        
+        self._asr.reset_vad_threshold()
+
+    def ASRLoop(self):
+        final_message = ""
+        for text_chunk in self._asr.stream():
+            if text_chunk: 
+                DrainLLMQueue()
+                final_message = final_message + text_chunk.strip()
+
+            if not CheckUserBargeIn() and final_message:
+                self.io_unit.push_to_llm(final_message)
+                final_message = ""
+
+    def WorkflowLoop(self):
+        from src.workflow import run_main_graph
+        
+        while True:
+            try:
+                task_summary = ComplexTaskQueue.get(timeout=1)
+            except queue.Empty:
+                continue
+
+            try:
+                ToggleWorkflow(True)
+                final = run_main_graph(task_summary, on_interrupt=self._handle_workflow_interrupt)
+            except Exception:
+                logger.exception("workflow run failed")
+                final = "[workflow failed]"
+            finally:
+                ToggleWorkflow(False)
+
+            self.io_unit.push_to_llm(final)
+    
+    def _handle_workflow_interrupt(self, payload: dict) -> str:
+        # self._safe_call(
+        #     self._listener.on_plan_review, payload, name="on_plan_review"
+        # )
+        return PlanReviewResponseQueue.get()

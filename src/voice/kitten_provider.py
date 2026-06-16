@@ -16,7 +16,7 @@ except ImportError:
     sd = None
 
 from src.config.logger import get_logger
-from src.voice.base import BaseTTS
+from src.voice.base_provider import BaseTTS
 
 logger = get_logger("voice.kitten")
 
