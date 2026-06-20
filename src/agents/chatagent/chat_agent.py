@@ -10,6 +10,7 @@ from src.config.global_events import *
 from src.config.global_queues import *
 from src.config.logger import get_logger
 from src.llms import llm_factory
+from src.observability import Metric, Stopwatch, latency_tracker
 from src.prompts import load_prompt
 from src.states.main_state import ChatState
 
@@ -124,6 +125,8 @@ class ChatAgent:
             stream_mode="messages",
             version="v2",
         )
+        stopwatch = Stopwatch()
+        first_token_seen = False
         try:
             for chunk in result:
                 if CheckUserBargeIn():
@@ -132,8 +135,15 @@ class ChatAgent:
                 if chunk.get("type", None) == "messages":
                     token, metadata = chunk.get("data", None)
                     if isinstance(token, AIMessageChunk) and isinstance(token.content, str):
+                        if not first_token_seen and token.content:
+                            first_token_seen = True
+                            latency_tracker.record(
+                                Metric.LLM_FIRST_TOKEN, stopwatch.elapsed_ms()
+                            )
                         yield token.content
 
         except Exception as e:
             logger.exception("chat stream failed")
             yield ("content", f"Got an error: {e}")
+        finally:
+            latency_tracker.record(Metric.LLM_STREAM, stopwatch.elapsed_ms())

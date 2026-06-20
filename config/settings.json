@@ -3,6 +3,8 @@
   "NAME": "DJ",
   "MODELS_DIR": "models",
   "TTS_PROVIDER": "kokoro",
+  "OBSERVABILITY_ENABLED": true,
+  "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318",
   "daily_budget_usd": 0,
   "is_planning_review": false,
   "planning_review_timeout_s": 120,

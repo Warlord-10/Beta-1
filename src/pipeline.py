@@ -8,6 +8,7 @@ from src.agents.chatagent.chat_agent import ChatAgent
 from src.asr.asr_service import ASRService
 from src.config.logger import get_logger
 from src.config.settings import SETTINGS
+from src.observability import Metric, latency_tracker
 from src.scheduler.scheduler_manager import SchedulerManager
 from src.utils.io import IO
 from src.utils.text_utils import accumulate_sentences, clean_text
@@ -155,19 +156,20 @@ class Pipeline:
         token_stream = self._chat_agent.stream(user_message)
         aborted = False
 
-        self._asr_service.set_vad_threshold(0.9)
+        with latency_tracker.measure(Metric.TURN):
+            self._asr_service.set_vad_threshold(0.9)
 
-        for sentence in accumulate_sentences(content_only(token_stream)):
-            if GlobalEvents.CheckUserBargeIn():
-                logger.debug("Barge-in — aborting LLM stream")
-                DrainLLMQueue()
-                aborted = True
-                break
-            if GlobalEvents.IsTTSEnabled():
-                GlobalQueues.llm_chunk_queue.put(sentence)
-            self._safe_call(self._listener.on_chunk, sentence, name="on_chunk")
+            for sentence in accumulate_sentences(content_only(token_stream)):
+                if GlobalEvents.CheckUserBargeIn():
+                    logger.debug("Barge-in — aborting LLM stream")
+                    DrainLLMQueue()
+                    aborted = True
+                    break
+                if GlobalEvents.IsTTSEnabled():
+                    GlobalQueues.llm_chunk_queue.put(sentence)
+                self._safe_call(self._listener.on_chunk, sentence, name="on_chunk")
 
-        self._asr_service.reset_vad_threshold()
+            self._asr_service.reset_vad_threshold()
 
         if thinking_buf:
             logger.info("chat thinking … %s", _summarise("".join(thinking_buf)))
@@ -260,15 +262,19 @@ class Pipeline_V2:
 
     def CallChatAgent(self, user_msg):
         print("Got a new msg: ", user_msg)
-        response_stream = self._chat_agent.stream(user_msg)
 
-        self._asr.set_vad_threshold(0.9)
+        with latency_tracker.measure(Metric.TURN):
+            response_stream = self._chat_agent.stream(user_msg)
+
+            self._asr.set_vad_threshold(0.9)
+
+            for res_chunk in accumulate_sentences(response_stream):
+                print("res_chunk: ", res_chunk)
+                LLMChunkQueue.put(clean_text(res_chunk))
+
+            self._asr.reset_vad_threshold()
         
-        for res_chunk in accumulate_sentences(response_stream):
-            print("res_chunk: ", res_chunk)
-            LLMChunkQueue.put(clean_text(res_chunk))
-        
-        self._asr.reset_vad_threshold()
+        print(latency_tracker.get_summary())
 
     def ASRLoop(self):
         final_message = ""

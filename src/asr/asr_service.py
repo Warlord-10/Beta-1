@@ -15,6 +15,7 @@ from src.asr.vad import VoiceActivityDetector
 from src.config.logger import get_logger
 from src.config.global_events import *
 from src.asr.aec import aec
+from src.observability import Metric, latency_tracker
 
 logger = get_logger("asr.stream")
 
@@ -43,7 +44,9 @@ class ASRService:
         if not buffer:
             return ""
         full_audio = np.concatenate(buffer)
-        return self.asr.transcribe(full_audio, self.sample_rate)
+        audio_ms = (len(full_audio) / self.sample_rate) * 1000.0
+        with latency_tracker.measure(Metric.STT_TRANSCRIBE, audio_ms=round(audio_ms)):
+            return self.asr.transcribe(full_audio, self.sample_rate)
 
     def _yield_transcript(self):
         temp_buffer = self._speech_buffer.copy()
@@ -126,11 +129,14 @@ class ASRService:
 
                     if self._is_speech_detected(chunk):
                         print("detected speech")
-                        ToggleUserBargeIn(True)
                         self._reset_silence_chunks()
                         current_speech_chunk += 1
                     else:
                         self._silence_chunks += 1
+
+                    # To prevent false barge ins
+                    if current_speech_chunk > 2:
+                        ToggleUserBargeIn(True)
 
                     # Partial transcription on short silence — user still speaking
                     if self._silence_chunks == 2 and current_speech_chunk > 0:

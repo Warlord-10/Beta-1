@@ -13,6 +13,7 @@ from src.asr.aec import aec
 from src.config.global_events import *
 from src.config.global_queues import LLMChunkQueue
 from src.config.logger import get_logger
+from src.observability import Metric, Stopwatch, latency_tracker
 from src.utils.text_utils import clean_text
 from src.voice.factory import get_tts_engine
 
@@ -23,6 +24,7 @@ _SHUTDOWN = object()
 
 class TTSService:
     def __init__(self, provider="kokoro", config={}):
+        self.provider = provider
         self.tts = get_tts_engine(provider=provider, config=config)
         self.sample_rate = getattr(self.tts, "sample_rate", 24000)
         self._leftover = np.array([], dtype="float32")
@@ -76,6 +78,9 @@ class TTSService:
         if not text.strip():
             return
 
+        stopwatch = Stopwatch()
+        first_chunk_seen = False
+
         for audio_chunk in self.tts.synthesize(text):
             if CheckUserBargeIn():
                 self._flush_audio_queue()
@@ -88,7 +93,17 @@ class TTSService:
             if chunk.size == 0:
                 continue
 
+            if not first_chunk_seen:
+                first_chunk_seen = True
+                latency_tracker.record(
+                    Metric.TTS_FIRST_AUDIO, stopwatch.elapsed_ms(), provider=self.provider
+                )
+
             self.AudioChunkQueue.put(chunk)
+
+        latency_tracker.record(
+            Metric.TTS_SYNTHESIZE, stopwatch.elapsed_ms(), provider=self.provider
+        )
 
     def stream(self):
         while True:
