@@ -9,12 +9,13 @@ from typing import Iterator
 from src.config.logger import get_logger
 from src.utils.text_utils import clean_text
 from src.voice.base_provider import BaseTTS
+from src.config.settings import SETTINGS
 
 logger = get_logger("voice.kokoro")
 
 class KokoroTTS(BaseTTS):
-    def __init__(self, voice_name: str = "af_heart", speed: float = 1.3) -> None:
-        self.sample_rate = 24000
+    def __init__(self, voice_name: str = "af_heart", speed: float = 1.3, **kwargs) -> None:
+        self.sample_rate = SETTINGS.TTS_SAMPLE_RATE
         self.voice_name = voice_name
         self.speed = speed
 
@@ -25,7 +26,6 @@ class KokoroTTS(BaseTTS):
         logger.info("Kokoro TTS ready")
 
     def _warmup(self) -> None:
-        """Force voice tensor load + first-call graph build at startup."""
         try:
             for _ in self.pipeline(
                 "warmup.",
@@ -38,21 +38,17 @@ class KokoroTTS(BaseTTS):
             logger.exception("Kokoro warmup failed")
 
     def synthesize(self, text: str) -> Iterator[np.ndarray]:
-        """
-        Yields numpy audio chunks for the given text.
-        This is a generator — iterate it, don't call it like a function.
-        """
-
         text = clean_text(text)
 
         try:
             logger.debug("Synthesizing: %r", text[:60])
-            for _gs, _ps, audio in self.pipeline(
+            generator = self.pipeline(
                 text,
                 voice=self.voice_name,
                 speed=self.speed,
-                split_pattern=r'\n+',
-            ):
+                split_pattern=r'',
+            )
+            for i, (gs, ps, audio) in enumerate(generator):
                 yield audio
 
         except Exception:

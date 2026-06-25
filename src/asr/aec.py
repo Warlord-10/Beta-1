@@ -19,11 +19,12 @@ import threading
 import numpy as np
 import soxr
 from aec_audio_processing import AudioProcessor
+from src.config.settings import SETTINGS
 
 # WebRTC APM only supports 8/16/32/48 kHz. Speaker stream is resampled 24k → 16k internally.
-MIC_SAMPLE_RATE = 16000
-SPEAKER_SAMPLE_RATE = 24000
-APM_SAMPLE_RATE = 16000
+MIC_SAMPLE_RATE = SETTINGS.MIC_SAMPLE_RATE
+SPEAKER_SAMPLE_RATE = SETTINGS.TTS_SAMPLE_RATE
+APM_SAMPLE_RATE = MIC_SAMPLE_RATE
 FRAME_MS = 10
 MIC_FRAME_SAMPLES = MIC_SAMPLE_RATE * FRAME_MS // 1000      # 160
 APM_FRAME_SAMPLES = APM_SAMPLE_RATE * FRAME_MS // 1000      # 160

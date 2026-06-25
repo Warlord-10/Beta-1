@@ -231,7 +231,7 @@ class Pipeline_V2:
             config={"configurable": {"thread_id": str(uuid.uuid4())}}
         )
 
-        self._tts = TTSService(provider="kokoro", config={"voice_name": "af_heart", "speed": 1.3})
+        self._tts = TTSService()
         self._asr = ASRService()
         self._scheduler = SchedulerManager()
 

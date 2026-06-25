@@ -16,6 +16,7 @@ from src.config.logger import get_logger
 from src.observability import Metric, Stopwatch, latency_tracker
 from src.utils.text_utils import clean_text
 from src.voice.factory import get_tts_engine
+from src.config.settings import SETTINGS
 
 logger = get_logger("tts.service")
 
@@ -23,10 +24,16 @@ logger = get_logger("tts.service")
 _SHUTDOWN = object()
 
 class TTSService:
-    def __init__(self, provider="kokoro", config={}):
-        self.provider = provider
-        self.tts = get_tts_engine(provider=provider, config=config)
-        self.sample_rate = getattr(self.tts, "sample_rate", 24000)
+    def __init__(self):
+        # MLX binds work to the thread-local GPU stream of whichever thread
+        # constructs the model. Building the TTS engine on the main thread but
+        # generating from the tts-worker thread raises "There is no
+        # Stream(gpu, 0) in current thread". Defer construction to stream()
+        # (runs on the worker thread) so load + warmup + execute share a stream.
+        self._tts_config = SETTINGS.TTS_CONFIG
+        self.tts = None
+        self.provider = SETTINGS.TTS_CONFIG.get("provider", "tts")
+        self.sample_rate = SETTINGS.TTS_SAMPLE_RATE
         self._leftover = np.array([], dtype="float32")
         self.AudioChunkQueue = Queue()
 
@@ -105,7 +112,13 @@ class TTSService:
             Metric.TTS_SYNTHESIZE, stopwatch.elapsed_ms(), provider=self.provider
         )
 
+    def _ensure_tts(self) -> None:
+        """Lazily build the MLX TTS engine on the calling (worker) thread."""
+        if self.tts is None:
+            self.tts = get_tts_engine(config=self._tts_config)
+
     def stream(self):
+        self._ensure_tts()
         while True:
             is_tts_enabled_event.wait()
             

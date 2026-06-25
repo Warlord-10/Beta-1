@@ -4,42 +4,49 @@ import numpy as np
 import warnings
 from src.asr.base import BaseASR
 from src.config.logger import get_logger
+from src.config.settings import SETTINGS
+import mlx_audio.stt.utils as utils
+import mlx.core as mx
+import warnings
 
 logger = get_logger("asr.mlx")
 
-class MLXWhisperASR(BaseASR):
-    """ASR implementation using mlx-whisper for Mac."""
+model_bank = [
+    "whisper-small-mlx",
+    "parakeet-tdt_ctc-110m", 
+    "parakeet-tdt-0.6b-v3",
+    "nemotron-3.5-asr-streaming-0.6b",
+    "nemotron-3.5-asr-streaming-0.6b-8bit"
+]
 
-    def __init__(self, model_path: str = "mlx-community/whisper-base-mlx"):
+class MLXProviderASR(BaseASR):
+    def __init__(self, model_name="parakeet-tdt_ctc-110m", **kwargs) -> None:
         try:
-            import mlx_whisper
-            self.asr = mlx_whisper
+            self.asr = utils.load(f"mlx-community/{model_name}")
+            self.sample_rate = SETTINGS.STT_SAMPLE_RATE
+            self._warmup()
+            logger.info("MLX Provider ASR loaded successfully")
         except ImportError:
-            raise ImportError("Please install mlx-whisper first: pip install mlx-whisper")
-            
-        self.model_path = model_path
-        logger.info(f"Loaded mlx-whisper with model: {self.model_path}")
-        self._warmup()
+            raise ImportError("Please install mlx_audio first: pip install mlx_audio")
 
     def _warmup(self) -> None:
-        """Force model weights load + first-call graph build at startup."""
         try:
-            import warnings
-            silent = np.zeros(16000, dtype=np.float32)
+            silent = np.zeros(self.sample_rate, dtype=np.float32)
+            silent = mx.array(silent)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                self.asr.transcribe(silent, path_or_hf_repo=self.model_path)
-            logger.info("mlx-whisper warmup complete")
+                self.asr.generate(silent)
+            logger.info("MLX Provider ASR warmup complete")
         except Exception:
-            logger.exception("mlx-whisper warmup failed")
-
-    def transcribe(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
+            logger.exception("MLX Provider ASR warmup failed")
+        
+    def transcribe(self, audio: np.ndarray) -> str:
         audio = audio.astype(np.float32)
+        audio = mx.array(audio)
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            result = self.asr.transcribe(audio, path_or_hf_repo=self.model_path)
-            
-        text = result.get("text", "").strip()
-        logger.debug(f"Transcribed (mlx): {text}")
+        result = self.asr.generate(audio)
+        text = result.text.strip()
+
+        logger.debug(f"Transcribed (mlx provider): {text}")
         return text
+        

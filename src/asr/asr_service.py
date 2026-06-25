@@ -10,12 +10,13 @@ except ImportError:
     pass
 
 from src.asr.factory import get_asr_engine
-# from src.asr.noise_suppressor import NoiseSuppressor
-from src.asr.vad import VoiceActivityDetector
+from src.asr.denoiser import SpeechDenoiser, downsample_48k_to_16k
+from src.asr.vad import VoiceActivityDetector, VoiceActivityDetectorStreaming
 from src.config.logger import get_logger
 from src.config.global_events import *
 from src.asr.aec import aec
 from src.observability import Metric, latency_tracker
+from src.config.settings import SETTINGS
 
 logger = get_logger("asr.stream")
 
@@ -23,57 +24,54 @@ logger = get_logger("asr.stream")
 class ASRService:
     def __init__(
         self,
-        sample_rate: int = 16000,
-        chunk_duration_ms: int = 10,
-        max_silence_chunks: int = 6,
+        block_ms: int = 50,
+        barge_in_ms: int = 150,
+        partial_pause_ms: int = 400,
+        end_silence_ms: int = 700,
     ):
-        self.sample_rate = sample_rate
-        self.chunk_size = int(self.sample_rate * (chunk_duration_ms / 1000.0))
-        self.max_silence_chunks = max_silence_chunks
+        self.sample_rate = SETTINGS.STT_SAMPLE_RATE
 
-        # self.noise_suppressor = NoiseSuppressor(target_sample_rate=sample_rate)
-        self.vad = VoiceActivityDetector(threshold=0.7)
-        self.asr = get_asr_engine()
+        self._block_ms = block_ms
+        self._frames_per_block = max(1, block_ms // 10)
+        self._barge_in_blocks = max(1, barge_in_ms // block_ms)
+        self._partial_pause_blocks = max(1, partial_pause_ms // block_ms)
+        self._end_silence_blocks = max(1, end_silence_ms // block_ms)
+
+        self._trailing_pad_blocks = max(1, 100 // block_ms)
+
+        # self.vad = VoiceActivityDetector(threshold=0.7, sample_rate=self.sample_rate)
+        self.vad = VoiceActivityDetectorStreaming(threshold=0.7, sample_rate=self.sample_rate)
+
+        self._asr_config = SETTINGS.STT_CONFIG
+        self.noise_suppressor = None
+        self.asr = None
 
         self.UserAudioQueue = queue.Queue()
-        self._speech_buffer: list = []
-        self._silence_chunks: int = 0
-
 
     def _transcribe_buffer(self, buffer: list) -> str:
-        if not buffer:
-            return ""
+        if not buffer: 
+            return None
+
         full_audio = np.concatenate(buffer)
         audio_ms = (len(full_audio) / self.sample_rate) * 1000.0
         with latency_tracker.measure(Metric.STT_TRANSCRIBE, audio_ms=round(audio_ms)):
-            return self.asr.transcribe(full_audio, self.sample_rate)
+            return self.asr.transcribe(full_audio)
 
-    def _yield_transcript(self):
-        temp_buffer = self._speech_buffer.copy()
-        text = self._transcribe_buffer(temp_buffer)
-        self._speech_buffer.clear()
+    def _yield_transcript(self, buffer):
+        text = self._transcribe_buffer(buffer)
 
         if text.strip():
-            print("Final transcript: ", text)
             return text
+        return None
 
     def _is_speech_detected(self, chunk: np.ndarray) -> bool:
-        return self.vad.contains_speech(chunk, self.sample_rate)
+        return self.vad.contains_speech(chunk)
 
     def _audio_callback(self, indata, frames, time_info, status):
         if status:
             logger.warning("Audio stream status: %s", status)
         chunk_for_aec = indata[:, 0].copy()
         self.UserAudioQueue.put(aec.process_mic(chunk_for_aec))
-
-    def _reset_silence_chunks(self):
-        self._silence_chunks = 0
-
-    def _can_process_partial_transcript(self):
-        pass
-
-    def _can_process_complete_transcript(self):
-        pass
 
     def set_vad_threshold(self, threshold: float):
         logger.info("VAD threshold changed to: %f", threshold)
@@ -83,6 +81,13 @@ class ASRService:
         logger.info("VAD threshold reset to: 0.7")
         self.vad.change_threshold(0.7)
 
+    def _ensure_models(self) -> None:
+        """Lazily build the MLX models on the calling (worker) thread."""
+        if self.noise_suppressor is None:
+            self.noise_suppressor = SpeechDenoiser()
+        if self.asr is None:
+            self.asr = get_asr_engine(config=self._asr_config)
+
     def stream(self):
         """
         Yields partial transcription strings as the user speaks.
@@ -90,65 +95,78 @@ class ASRService:
         so the consumer always sees a consistent event + text together.
         """
         logger.info("ASR stream started")
-        self._speech_buffer.clear()
-        self._silence_chunks = 0
+        self._ensure_models()
 
         while True:
             is_asr_enabled_event.wait()
 
             with sd.InputStream(
-                samplerate=self.sample_rate,
+                samplerate=SETTINGS.MIC_SAMPLE_RATE,
                 channels=1,
-                blocksize=self.chunk_size,
+                blocksize=SETTINGS.MIC_SAMPLE_RATE//100,    # 10ms of audio
                 latency="high",
                 callback=self._audio_callback,
             ):
 
-                current_speech_chunk = 0
-                vad_buffer = []
+                block_frames: list = []
+                speech_buffer: list = []
+                speech_blocks = 0
+                silence_blocks = 0
+                utterance_flag = False
 
                 while IsASREnabled():
                     try:
-                        chunk = self.UserAudioQueue.get()
+                        frame = self.UserAudioQueue.get()
                     except queue.Empty:
                         continue
 
                     # Shutdown sentinel
-                    if chunk is None:
+                    if frame is None:
                         break
 
-                    # Check if enough chunks are present for VAD
-                    vad_buffer.append(chunk)
-                    if len(vad_buffer) < 25:
+                    # Accumulate B ms of 10 ms mic frames before running models.
+                    block_frames.append(frame)
+                    if len(block_frames) < self._frames_per_block:
                         continue
 
-                    chunk = np.concatenate(vad_buffer)
-                    vad_buffer.clear()
+                    block = np.concatenate(block_frames)
+                    block_frames.clear()
 
-                    self._speech_buffer.append(chunk)
+                    # Denoise + downsample once per block (B ms).
+                    block = self.noise_suppressor.process(block)
+                    block = downsample_48k_to_16k(block)
 
-                    if self._is_speech_detected(chunk):
-                        print("detected speech")
-                        self._reset_silence_chunks()
-                        current_speech_chunk += 1
-                    else:
-                        self._silence_chunks += 1
+                    speech = self._is_speech_detected(block)
+                    
+                    if speech:
+                        utterance_flag = True
+                        speech_blocks += 1
+                        silence_blocks = 0
+                    elif utterance_flag:
+                        silence_blocks += 1
 
-                    # To prevent false barge ins
-                    if current_speech_chunk > 2:
+                    if not utterance_flag:
+                        continue
+                        
+                    if speech_blocks >= self._barge_in_blocks:
                         ToggleUserBargeIn(True)
 
-                    # Partial transcription on short silence — user still speaking
-                    if self._silence_chunks == 2 and current_speech_chunk > 0:
-                        current_speech_chunk = 0
-                        yield self._yield_transcript()
+                    speech_buffer.append(block)
 
-                    # End of utterance — clear event AFTER yielding final chunk
-                    if self._silence_chunks >= self.max_silence_chunks:
-                        self._reset_silence_chunks()
-                        current_speech_chunk = 0
-
-                        # Flush any remaining audio
-                        self._speech_buffer.clear()
+                    # Micro pause, generate partial transcript
+                    if silence_blocks >= self._partial_pause_blocks and speech_blocks > 0:
+                        text = self._yield_transcript(speech_buffer)
+                        speech_blocks = 0
+                        speech_buffer.clear()
+                        if text:
+                            yield text
+                    
+                    # End of user speaking, reset all flags
+                    if silence_blocks >= self._end_silence_blocks:
+                        self.vad.reset()
                         ToggleUserBargeIn(False)
+                        utterance_flag = False
+                        silence_blocks = 0
+                        speech_blocks = 0
+                        speech_buffer.clear()
                         yield None

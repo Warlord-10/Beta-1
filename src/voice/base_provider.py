@@ -10,17 +10,8 @@ class BaseTTS(ABC):
 
     @abstractmethod
     def synthesize(self, text: str) -> Optional[np.ndarray]:
-        """Synthesize text into a raw numpy array.
-        
-        Args:
-            text: Text to synthesize.
-
-        Returns:
-            A corresponding numpy array representing the audio wave, or None if failed.
-        """
         pass
     
     @abstractmethod
     def _warmup(self) -> None:
-        """Force TTS model loading and first inference at startup."""
         pass
