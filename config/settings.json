@@ -2,27 +2,16 @@
   "LOG_MODE": "file",
   "NAME": "DJ",
   "MODELS_DIR": "models",
-  "TTS_PROVIDER": "kokoro",
+  "OBSERVABILITY_ENABLED": false,
+  "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318",
   "daily_budget_usd": 0,
   "is_planning_review": false,
   "planning_review_timeout_s": 120,
-  "TTS_CONFIG": {
-    "supertonic": {
-      "voice_name": "F1",
-      "sample_rate": 24000,
-      "speed": 1.3,
-      "total_steps": 30
-    },
-    "kokoro": {
-      "voice_name": "af_heart",
-      "sample_rate": 24000,
-      "speed": 1.3
-    },
-    "kitten": {
-      "model_name": "KittenML/kitten-tts-mini-0.8",
-      "voice_name": "Jasper",
-      "sample_rate": 24000,
-      "speed": 1.3
-    }
-  }
+  // TTS Configuration
+  "TTS_PROVIDER": "mlx",
+  "TTS_CONFIG": {},
+  "TTS_SAMPLE_RATE": 24000,
+  // STT Configuration
+  "STT_CONFIG": {},
+  "STT_SAMPLE_RATE": 16000
 }

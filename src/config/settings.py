@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,7 @@ def _settings_path() -> Path:
     return Path(os.environ.get("BETA1_SETTINGS_FILE", _DEFAULT_SETTINGS_FILE))
 
 
-def _load_settings_file() -> dict:
+def load_settings_file() -> dict:
     path = _settings_path()
     if not path.is_file():
         raise FileNotFoundError(
@@ -41,39 +42,43 @@ def _load_settings_file() -> dict:
     return data
 
 
+@dataclass
 class Settings:
-    """Mutable settings container. Attributes mirror keys in settings.json."""
+    LOG_MODE: str = "file"
+    NAME: str = "DJ"
+    MODELS_DIR: str = "models"
 
-    def __init__(self, data: dict) -> None:
-        for k, v in data.items():
-            setattr(self, k, v)
+    LOG_FILE_PATH: str = os.path.join(_REPO_ROOT, "logs", f"{date.today()}.log")
+    DEFAULT_CWD: str = os.getcwd()
 
-    def keys(self) -> list[str]:
-        return [k for k in self.__dict__.keys() if not k.startswith("_")]
+    OBSERVABILITY_ENABLED: bool = False
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4318"
 
-    def persistent_keys(self) -> list[str]:
-        return [k for k in self.keys() if k not in _RUNTIME_KEYS]
+    daily_budget_usd: float = 0
+    is_planning_review: bool = False
 
-    def to_dict(self) -> dict[str, Any]:
-        return {k: getattr(self, k) for k in self.persistent_keys()}
+    planning_review_timeout_s: int = 120
 
-    def update(self, **kwargs) -> None:
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+    MIC_SAMPLE_RATE: int = 48000
 
-    def save(self) -> Path:
-        """Persist current values back to settings.json (excluding runtime keys)."""
-        path = _settings_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, indent=2)
-        return path
+    STT_SAMPLE_RATE: int = 16000
+    STT_CONFIG: dict[str, Any] = field(
+        default_factory=lambda: {
+            "provider": "mlx",
+            "model_name": "parakeet-tdt-0.6b-v3"
+        }
+    )
+    
+    TTS_SAMPLE_RATE: int = 24000
+    TTS_CONFIG: dict[str, Any] = field(
+        default_factory=lambda: {
+            "provider": "kokoro",
+            "voice_name": "af_heart",
+            "speed": 1.3
+        }
+    )
 
+    
 
-_data = _load_settings_file()
-_data.update({
-    "LOG_FILE_PATH": os.path.join(_REPO_ROOT, "logs", f"{date.today()}.log"),
-    "DEFAULT_CWD": os.getcwd(),
-})
-
-SETTINGS = Settings(_data)
+SETTINGS = Settings()
+print(SETTINGS)

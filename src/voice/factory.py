@@ -2,21 +2,12 @@
 
 from typing import Dict, Any
 from src.config.logger import get_logger
-from src.voice.base import BaseTTS
+from src.voice.base_provider import BaseTTS
 
 logger = get_logger("voice.factory")
 
-def get_tts_engine(provider: str, config: Dict[str, Any]) -> BaseTTS:
-    """Instantiate and return the configured TTS engine.
-    
-    Args:
-        provider: String name of the provider ("kokoro", "supertonic").
-        config: Dictionary of kwargs for the provider parameters.
-        
-    Returns:
-        An instance of BaseTTS.
-    """
-    provider = provider.lower().strip()
+def get_tts_engine(config: Dict[str, Any] = {}) -> BaseTTS:
+    provider = config.get("provider", "kokoro").lower().strip()
     
     if provider == "supertonic":
         from src.voice.supertonic_provider import SupertonicTTS
@@ -24,9 +15,9 @@ def get_tts_engine(provider: str, config: Dict[str, Any]) -> BaseTTS:
     elif provider == "kokoro":
         from src.voice.kokoro_provider import KokoroTTS
         return KokoroTTS(**config)
-    elif provider == "kitten":
-        from src.voice.kitten_provider import KittenProvider
-        return KittenProvider(**config)
+    elif provider == "mlx":
+        from src.voice.mlx_provider import MLXProviderTTS
+        return MLXProviderTTS(**config)
     else:
         return None
         # raise ValueError(f"Unknown TTS provider: {provider}")

@@ -1,0 +1,95 @@
+{
+  "title": "Beta-1 — Voice Pipeline Latency",
+  "uid": "beta1-latency",
+  "schemaVersion": 39,
+  "tags": ["beta-1", "latency"],
+  "timezone": "browser",
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "10s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Overview — p95 latency by stage",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        { "refId": "STT", "legendFormat": "STT transcribe", "expr": "histogram_quantile(0.95, sum(rate(stt_transcribe_latency_milliseconds_bucket[5m])) by (le))" },
+        { "refId": "TTFT", "legendFormat": "LLM first token", "expr": "histogram_quantile(0.95, sum(rate(llm_first_token_latency_milliseconds_bucket[5m])) by (le))" },
+        { "refId": "LLM", "legendFormat": "LLM stream total", "expr": "histogram_quantile(0.95, sum(rate(llm_stream_latency_milliseconds_bucket[5m])) by (le))" },
+        { "refId": "TTFB", "legendFormat": "TTS first audio", "expr": "histogram_quantile(0.95, sum(rate(tts_first_audio_latency_milliseconds_bucket[5m])) by (le))" },
+        { "refId": "TTS", "legendFormat": "TTS synthesize total", "expr": "histogram_quantile(0.95, sum(rate(tts_synthesize_latency_milliseconds_bucket[5m])) by (le))" },
+        { "refId": "TURN", "legendFormat": "Turn e2e", "expr": "histogram_quantile(0.95, sum(rate(turn_e2e_latency_milliseconds_bucket[5m])) by (le))" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "STT latency — transcribe (audio → text)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms", "color": { "mode": "palette-classic" } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "refId": "P50", "legendFormat": "p50", "expr": "histogram_quantile(0.50, sum(rate(stt_transcribe_latency_milliseconds_bucket[5m])) by (le))" },
+        { "refId": "P95", "legendFormat": "p95", "expr": "histogram_quantile(0.95, sum(rate(stt_transcribe_latency_milliseconds_bucket[5m])) by (le))" },
+        { "refId": "AVG", "legendFormat": "avg", "expr": "sum(rate(stt_transcribe_latency_milliseconds_sum[5m])) / sum(rate(stt_transcribe_latency_milliseconds_count[5m]))" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "LLM latency — chat agent (TTFT & stream total)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms", "color": { "mode": "palette-classic" } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "refId": "TTFT50", "legendFormat": "TTFT p50", "expr": "histogram_quantile(0.50, sum(rate(llm_first_token_latency_milliseconds_bucket[5m])) by (le))" },
+        { "refId": "TTFT95", "legendFormat": "TTFT p95", "expr": "histogram_quantile(0.95, sum(rate(llm_first_token_latency_milliseconds_bucket[5m])) by (le))" },
+        { "refId": "TOT50", "legendFormat": "stream p50", "expr": "histogram_quantile(0.50, sum(rate(llm_stream_latency_milliseconds_bucket[5m])) by (le))" },
+        { "refId": "TOT95", "legendFormat": "stream p95", "expr": "histogram_quantile(0.95, sum(rate(llm_stream_latency_milliseconds_bucket[5m])) by (le))" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "TTS latency — synthesis (TTFB & total)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms", "color": { "mode": "palette-classic" } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "refId": "TTFB50", "legendFormat": "TTFB p50", "expr": "histogram_quantile(0.50, sum(rate(tts_first_audio_latency_milliseconds_bucket[5m])) by (le))" },
+        { "refId": "TTFB95", "legendFormat": "TTFB p95", "expr": "histogram_quantile(0.95, sum(rate(tts_first_audio_latency_milliseconds_bucket[5m])) by (le))" },
+        { "refId": "TOT50", "legendFormat": "synthesize p50", "expr": "histogram_quantile(0.50, sum(rate(tts_synthesize_latency_milliseconds_bucket[5m])) by (le))" },
+        { "refId": "TOT95", "legendFormat": "synthesize p95", "expr": "histogram_quantile(0.95, sum(rate(tts_synthesize_latency_milliseconds_bucket[5m])) by (le))" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "End-to-end turn latency (turnaround time)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms", "color": { "mode": "palette-classic" } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "refId": "P50", "legendFormat": "p50", "expr": "histogram_quantile(0.50, sum(rate(turn_e2e_latency_milliseconds_bucket[5m])) by (le))" },
+        { "refId": "P95", "legendFormat": "p95", "expr": "histogram_quantile(0.95, sum(rate(turn_e2e_latency_milliseconds_bucket[5m])) by (le))" },
+        { "refId": "P99", "legendFormat": "p99", "expr": "histogram_quantile(0.99, sum(rate(turn_e2e_latency_milliseconds_bucket[5m])) by (le))" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Per-turn stage breakdown (avg ms over window)",
+      "type": "barchart",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "options": { "orientation": "horizontal", "stacking": "normal" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "targets": [
+        { "refId": "STT", "legendFormat": "STT", "expr": "sum(rate(stt_transcribe_latency_milliseconds_sum[5m])) / sum(rate(stt_transcribe_latency_milliseconds_count[5m]))" },
+        { "refId": "LLM", "legendFormat": "LLM (stream)", "expr": "sum(rate(llm_stream_latency_milliseconds_sum[5m])) / sum(rate(llm_stream_latency_milliseconds_count[5m]))" },
+        { "refId": "TTS", "legendFormat": "TTS (synthesize)", "expr": "sum(rate(tts_synthesize_latency_milliseconds_sum[5m])) / sum(rate(tts_synthesize_latency_milliseconds_count[5m]))" }
+      ]
+    }
+  ]
+}

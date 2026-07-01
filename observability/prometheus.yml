@@ -1,0 +1,10 @@
+# Prometheus scrapes itself; latency metrics arrive via the OTLP write receiver
+# (enabled by --enable-feature=otlp-write-receiver in docker-compose.yml).
+
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
