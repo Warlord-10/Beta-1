@@ -63,5 +63,21 @@
   "DS_V4_FLASH": {
     "provider": "nvidia",
     "model": "moonshotai/kimi-k2-instruct-0905"
+  },
+  "ZAI_GLM_4_7": {
+    "provider": "zai",
+    "model": "glm-4.7-flash",
+    "pricing": {
+      "input": 0.0,
+      "output": 0.0
+    }
+  },
+  "ZAI_GLM_4_5": {
+    "provider": "zai",
+    "model": "glm-4.5-flash",
+    "pricing": {
+      "input": 0.0,
+      "output": 0.0
+    }
   }
 }

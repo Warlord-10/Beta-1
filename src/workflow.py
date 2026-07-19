@@ -13,6 +13,7 @@ Invoked via :func:`run_main_graph` — typically from the chat agent's
 
 from __future__ import annotations
 
+import threading
 import uuid
 from typing import Any, Callable, Optional
 
@@ -30,6 +31,9 @@ from src.utils.errors import NodeFailure, format_app_traceback, node_guard
 
 logger = get_logger("workflow")
 
+
+# Guarantees one autonomous task executes at a time across all callers.
+_WORKFLOW_LOCK = threading.Lock()
 
 _REVIEW_APPROVED = "approved"
 _REVIEW_REJECTED = "rejected"
@@ -58,10 +62,12 @@ def plan_review_node(state: MainState) -> dict:
     if not getattr(SETTINGS, "is_planning_review", False):
         return {"next_agent": _REVIEW_APPROVED}
 
-    response = interrupt({
-        "implementation_plan": state.get("implementation_plan", ""),
-        "action_checklist": state.get("action_checklist", []),
-    })
+    response = interrupt(
+        {
+            "implementation_plan": state.get("implementation_plan", ""),
+            "action_checklist": state.get("action_checklist", []),
+        }
+    )
     verdict = (response or "").strip().lower()
 
     if verdict in _REJECT_VERDICTS:
@@ -116,50 +122,51 @@ def build_main_graph():
 
     graph.add_edge(START, "planning")
     graph.add_edge("planning", "plan_review")
-    graph.add_conditional_edges("plan_review", route_after_review, {
-        "approved": "supervisor",
-        "rejected": "format_response",
-    })
+    graph.add_conditional_edges(
+        "plan_review",
+        route_after_review,
+        {
+            "approved": "supervisor",
+            "rejected": "format_response",
+        },
+    )
     graph.add_edge("supervisor", "format_response")
     graph.add_edge("format_response", END)
 
     return graph.compile(checkpointer=InMemorySaver())
 
+
 main_graph = build_main_graph()
 
 
-def run_main_graph(task_summary: str, on_interrupt: Optional[InterruptHandler] = None) -> str:
-    thread_id = str(uuid.uuid4())
-    config = {"configurable": {"thread_id": thread_id}}
-    graph_input: Any = initial_main_state(task_summary)
-    logger.info("workflow start (thread_id=%s) task=%r", thread_id, task_summary)
+def run_main_graph(
+    task_summary: str, on_interrupt: Optional[InterruptHandler] = None
+) -> str:
+    """Run a complex task via the autonomous agent.
 
+    Signature kept for the pipeline's WorkflowLoop. ``on_interrupt`` is unused —
+    the autonomous agent has no plan-review interrupt (it self-verifies instead).
+    The old planner→supervisor graph below is retained but no longer invoked.
+    """
+    from src.agents.autonomousagent.autonomous_agent import run_autonomous_agent
+
+    logger.info("Starting workflow for task: %s", task_summary)
+    # Serialise: only one autonomous task runs at a time. The single WorkflowLoop
+    # already achieves this, but the lock also guards any direct/second caller
+    # (e.g. a scheduled task) — the next caller blocks until this one finishes.
     try:
-        while True:
-            result = main_graph.invoke(graph_input, config=config)
-            interrupts = (
-                result.get("__interrupt__") if isinstance(result, dict) else None
-            )
-            if not interrupts:
-                final = result.get("final_response", "") if isinstance(result, dict) else ""
-                logger.info("workflow done (thread_id=%s)", thread_id)
-                return final
-
-            payload = _interrupt_payload(interrupts[0])
-            verdict = on_interrupt(payload) if on_interrupt is not None else ""
-            graph_input = Command(resume=verdict)
+        with _WORKFLOW_LOCK:
+            return run_autonomous_agent(task_summary)
     except NodeFailure as nf:
         logger.error("workflow halted: %s", nf.message)
         return nf.message
     except Exception as exc:
-        # An exception that escaped the per-node guards — wrap and surface.
         logger.error(
-            "workflow crashed outside any node guard — %s\n%s",
-            exc, format_app_traceback(),
+            "workflow crashed — %s\n%s",
+            exc,
+            format_app_traceback(),
         )
         return f"<workflow:run_main_graph, ERROR: {exc}>"
-    finally:
-        _delete_session(thread_id)
 
 
 def _delete_session(thread_id: str) -> None:

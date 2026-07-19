@@ -10,16 +10,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from src.config.settings import SETTINGS
 from src.cli.tui import TUI
 from src.pipeline import Pipeline, Pipeline_V2
 
 
 def main() -> None:
-    pipeline = Pipeline_V2()
-    gui_enabled = input("Wants GUI? (y/n): ").strip().lower()
-    pipeline.start()
+    gui = SETTINGS.IS_GUI_ENABLED
 
-    if gui_enabled == "y":
+    pipeline = Pipeline_V2()
+    # GUI: start muted — the user turns audio on via live mode (Ctrl+L).
+    # Headless: audio on so the voice assistant can hear immediately.
+    pipeline.start(audio_enabled=not gui)
+
+    if gui:
         try:
             TUI(pipeline=pipeline).run()
         finally:

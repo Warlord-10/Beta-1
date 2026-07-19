@@ -12,12 +12,18 @@ Usage:
 
 from __future__ import annotations
 
+import os
+
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 
 from src.llms.registry import MODEL_REGISTRY
-from src.llms.cost_tracker import cost_tracker as _default_tracker, CostTracker, CostTrackerCallback
+from src.llms.cost_tracker import (
+    cost_tracker as _default_tracker,
+    CostTracker,
+    CostTrackerCallback,
+)
 from src.config.logger import get_logger
 
 logger = get_logger("llms.factory")
@@ -25,32 +31,50 @@ logger = get_logger("llms.factory")
 
 # ── Provider constructors ────────────────────────────────────────────
 
+
 def _build_google(model: str, **kwargs: Any) -> BaseChatModel:
     from langchain_google_genai import ChatGoogleGenerativeAI
+
     return ChatGoogleGenerativeAI(model=model, **kwargs)
 
 
 def _build_groq(model: str, **kwargs: Any) -> BaseChatModel:
     from langchain_groq import ChatGroq
+
     return ChatGroq(model=model, **kwargs)
 
 
 def _build_openrouter(model: str, **kwargs: Any) -> BaseChatModel:
     from langchain_openrouter import ChatOpenRouter
+
     return ChatOpenRouter(model=model, **kwargs)
 
 
 def _build_nvidia(model: str, **kwargs: Any) -> BaseChatModel:
     from langchain_nvidia import ChatNVIDIA
+
     return ChatNVIDIA(model=model, **kwargs)
 
 
+def _build_zai(model: str, **kwargs: Any) -> BaseChatModel:
+    from langchain_openai import ChatOpenAI
+
+    return ChatOpenAI(
+        model=model,
+        base_url="https://api.z.ai/api/paas/v4",
+        api_key=os.getenv("ZAI_API_KEY"),
+        **kwargs,
+    )
+
+
 _PROVIDER_BUILDERS = {
-    "google":      _build_google,
-    "groq":        _build_groq,
-    "openrouter":  _build_openrouter,
-    "nvidia":      _build_nvidia,
+    "google": _build_google,
+    "groq": _build_groq,
+    "openrouter": _build_openrouter,
+    "nvidia": _build_nvidia,
+    "zai": _build_zai,
 }
+
 
 class LLMFactory:
 
@@ -92,6 +116,17 @@ class LLMFactory:
         }
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+
+        if provider == "google":
+            from langchain_google_genai import HarmBlockThreshold, HarmCategory
+
+            kwargs["safety_settings"] = {
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            }
+            kwargs["thinking_level"] = "minimal"
 
         # Attach cost-tracking callback
         tracker_cb = CostTrackerCallback(
