@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -51,6 +51,8 @@ class Settings:
     LOG_FILE_PATH: str = os.path.join(_REPO_ROOT, "logs", f"{date.today()}.log")
     DEFAULT_CWD: str = os.getcwd()
 
+    IS_GUI_ENABLED: bool = True
+
     OBSERVABILITY_ENABLED: bool = False
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4318"
 
@@ -65,20 +67,36 @@ class Settings:
     STT_CONFIG: dict[str, Any] = field(
         default_factory=lambda: {
             "provider": "mlx",
-            "model_name": "parakeet-tdt-0.6b-v3"
+            "model_name": "parakeet-tdt-0.6b-v3",
         }
     )
-    
+
     TTS_SAMPLE_RATE: int = 24000
     TTS_CONFIG: dict[str, Any] = field(
         default_factory=lambda: {
             "provider": "kokoro",
             "voice_name": "af_heart",
-            "speed": 1.3
+            "speed": 1.3,
         }
     )
 
-    
+    def persistent_keys(self) -> list[str]:
+        """Field names that represent real config — excludes runtime-injected
+        keys (log path, cwd). Used by the settings pane to render/save rows."""
+        return [f.name for f in fields(self) if f.name not in _RUNTIME_KEYS]
+
+    def save(self) -> str:
+        """Persist the config fields to the settings JSON file. Returns the path.
+
+        ponytail: writes config/settings.json. When that file is discontinued,
+        drop this method and the settings pane's Save button together.
+        """
+        path = _settings_path()
+        data = {k: getattr(self, k) for k in self.persistent_keys()}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        return str(path)
+
 
 SETTINGS = Settings()
-print(SETTINGS)

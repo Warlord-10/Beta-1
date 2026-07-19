@@ -1,8 +1,9 @@
 """Beta-1 TUI — the Textual app.
 
-Thin orchestrator: implements :class:`PipelineListener`, wires its callbacks
-to the chat view, and drives the tab panes. State lives in the widgets; the
-app class just plumbs events between threads.
+Thin orchestrator: subscribes to the pipeline's event bus, marshals events
+onto the Textual loop, and drives the tab panes. State lives in the widgets;
+the app class just plumbs events between threads. Commands (submit, plan
+review, audio toggle) go back to the pipeline via its command API.
 """
 
 from __future__ import annotations
@@ -15,7 +16,16 @@ from textual.binding import Binding
 from textual.containers import Container
 from textual.widgets import Header, Static, TabbedContent, TabPane
 
-from src.pipeline import PipelineListener
+from src.config.event_bus import (
+    EVENT_BUS,
+    Chunk,
+    PlanReview as PlanReviewEvent,
+    TurnEnd,
+    TurnStart,
+    UserMessage,
+    WorkflowStatus,
+)
+from src.config.global_events import IsWorkflowActive
 
 from .panes import (
     CostsPane,
@@ -27,35 +37,7 @@ from .panes import (
 from .widgets import AUDIO_AVAILABLE, ChatInput, ChatView, PlanReview
 
 if TYPE_CHECKING:
-    from src.pipeline import Pipeline
-
-
-class _TUIListener(PipelineListener):
-    """Adapter that marshals pipeline callbacks onto the Textual event loop."""
-
-    def __init__(self, tui: "TUI") -> None:
-        self._tui = tui
-
-    def on_turn_start(self) -> None:
-        self._tui.call_from_thread(self._tui.chat_view.start_bot_turn)
-
-    def on_chunk(self, chunk: str) -> None:
-        self._tui.call_from_thread(self._tui.chat_view.append_bot, chunk)
-        self._tui.call_from_thread(self._tui.refresh_status)
-
-    def on_thinking(self, chunk: str) -> None:
-        self._tui.call_from_thread(self._tui.chat_view.append_thinking, chunk)
-
-    def on_turn_end(self) -> None:
-        self._tui.call_from_thread(self._tui.chat_view.end_bot_turn)
-        self._tui.call_from_thread(self._tui.refresh_status)
-
-    def on_user_message(self, text: str) -> None:
-        self._tui.call_from_thread(self._tui.chat_view.post_user, text)
-        self._tui.call_from_thread(self._tui.refresh_status)
-
-    def on_plan_review(self, plan: dict) -> None:
-        self._tui.call_from_thread(self._tui.show_plan_review, plan)
+    from src.pipeline import Pipeline_V2
 
 
 class TUI(App):
@@ -90,7 +72,7 @@ class TUI(App):
         Binding("ctrl+d", "toggle_dark", "Theme", show=True),
     ]
 
-    def __init__(self, pipeline: Optional["Pipeline"] = None) -> None:
+    def __init__(self, pipeline: Optional["Pipeline_V2"] = None) -> None:
         super().__init__()
         self._pipeline = pipeline
         self.chat_view = ChatView()
@@ -123,14 +105,57 @@ class TUI(App):
             "[bold cyan]Beta-1[/] ready. "
             "[dim]Personal AI Assistant • by Deepanshu Joshi[/]"
         )
-        if self._pipeline is not None:
-            self._pipeline.attach_listener(_TUIListener(self))
+        self._unsubscribe = EVENT_BUS.subscribe(self._on_event)
         self.set_interval(30.0, self._refresh_live_tabs)
         # Cheap status refresh so the workflow-active / live indicators stay
         # in sync without the chat agent needing to fire a callback.
         self.set_interval(1.0, self.refresh_status)
 
-    # ── plan review entry point (called via listener) ───────────────────
+    def on_unmount(self) -> None:
+        unsub = getattr(self, "_unsubscribe", None)
+        if unsub:
+            unsub()
+
+    # ── event bus subscriber ────────────────────────────────────────────
+    def _on_event(self, event) -> None:
+        """Runs on a pipeline worker thread — marshal every UI mutation onto
+        Textual's loop via call_from_thread."""
+        if isinstance(event, TurnStart):
+            self.call_from_thread(self.chat_view.start_bot_turn)
+        elif isinstance(event, Chunk):
+            self.call_from_thread(self.chat_view.append_bot, event.text)
+            self.call_from_thread(self.refresh_status)
+        elif isinstance(event, TurnEnd):
+            self.call_from_thread(self.chat_view.end_bot_turn)
+            self.call_from_thread(self.refresh_status)
+        elif isinstance(event, UserMessage):
+            self.call_from_thread(self.chat_view.post_user, event.text)
+            self.call_from_thread(self.refresh_status)
+        elif isinstance(event, PlanReviewEvent):
+            self.call_from_thread(self.show_plan_review, event.plan)
+        elif isinstance(event, WorkflowStatus):
+            self.call_from_thread(self._on_workflow_status, event)
+
+    def _on_workflow_status(self, event) -> None:
+        # Post only on status transitions — the bus fires on every plan/file
+        # tick, so dedupe to avoid spamming the chat view. Live step-by-step
+        # progress is available on demand via the get_workflow_status tool.
+        if getattr(self, "_last_wf_status", None) == event.status:
+            return
+        self._last_wf_status = event.status
+        icon = {"running": "⚙", "done": "✅", "failed": "❌",
+                "cancelled": "🛑"}.get(event.status, "•")
+        if event.status == "running":
+            self.chat_view.post_bot(f"{icon} Background task started: [b]{event.task}[/]")
+        else:
+            files = ", ".join(event.files_changed) or "none"
+            self.chat_view.post_bot(
+                f"{icon} Background task {event.status}: [b]{event.task}[/]\n"
+                f"[dim]Files changed: {files}[/]"
+            )
+        self.refresh_status()
+
+    # ── plan review entry point ─────────────────────────────────────────
     def show_plan_review(self, plan: dict) -> None:
         self._plan_review.request(plan)
         self.chat_view.post_bot(PlanReview.render(plan))
@@ -222,15 +247,13 @@ class TUI(App):
 
     # ── status bar ──────────────────────────────────────────────────────
     def _status_text(self) -> str:
-        from src.config.events import GlobalEvents
-
         live = (
             "[bold red]● LIVE[/]" if self.chat_input.live else "[dim]○ idle[/]"
         )
         audio_src = "mic" if AUDIO_AVAILABLE else "sim"
         workflow_hint = (
             "  │  [cyan]⚙ workflow running[/]"
-            if GlobalEvents.is_workflow_active() else ""
+            if IsWorkflowActive() else ""
         )
         plan_hint = (
             "  │  [yellow]📋 awaiting plan review[/]"

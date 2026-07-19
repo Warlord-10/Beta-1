@@ -3,12 +3,13 @@ from __future__ import annotations
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessageChunk, HumanMessage
 from langchain_core.tools import tool
-from langchain_google_genai import HarmBlockThreshold, HarmCategory
 from langgraph.checkpoint.memory import InMemorySaver
 
+from src.config.context import environment_context
 from src.config.global_events import *
 from src.config.global_queues import *
 from src.config.logger import get_logger
+from src.config.workflow_context import cancel_workflow, get_workflow_status
 from src.llms import llm_factory
 from src.observability import Metric, Stopwatch, latency_tracker
 from src.prompts import load_prompt
@@ -16,27 +17,31 @@ from src.states.main_state import ChatState
 
 # Read-only file tools
 from src.tools.file_tools import (
-    get_file_info, 
-    list_directory, 
+    get_file_info,
+    list_directory,
     read_file,
     search_content,
-    search_files
+    search_files,
 )
+
 # Memory tools
 from src.tools.memory_tools.daily_memory_tools import (
     add_to_daily_memory,
-    read_daily_memory
+    read_daily_memory,
 )
+
 # Scheduler tools
 from src.tools.scheduler_tools import (
     create_scheduled_task,
     delete_scheduled_task,
     list_scheduled_tasks,
     modify_scheduled_task,
-    toggle_scheduled_task
+    toggle_scheduled_task,
 )
+
 # Web search (lightweight — deep research goes through delegate_to_planner)
 from src.tools.search_tools import regular_search
+
 # Safe system tools
 from src.tools.system_tools.safe_bash import safe_bash
 
@@ -46,13 +51,14 @@ logger = get_logger("agents.chat_agent")
 @tool
 def delegate_to_planner(task_summary: str) -> str:
     """Delegate a complex task to the planning workflow.
-        Args: 
-            task_summary: Summary of the task to be delegated
-        Returns: 
-            Confirmation message of the delegated task.
+    Args:
+        task_summary: Summary of the task to be delegated
+    Returns:
+        Confirmation message of the delegated task.
     """
 
     ComplexTaskQueue.put(task_summary)
+    print("Task inserted: ", task_summary)
 
     return f"""The task has been delegated, final update will be provided once it is completed.
     Tell the user that you will update him once this task is completed.
@@ -67,20 +73,18 @@ CHAT_AGENT_TOOLS = [
     search_files,
     search_content,
     safe_bash,
-
     # Web search (quick lookups)
     regular_search,
-
     # Delegation
     delegate_to_planner,
-
+    get_workflow_status,
+    cancel_workflow,
     # Scheduler
     create_scheduled_task,
     delete_scheduled_task,
     list_scheduled_tasks,
     modify_scheduled_task,
     toggle_scheduled_task,
-
     # Memory
     add_to_daily_memory,
     read_daily_memory,
@@ -91,23 +95,12 @@ class ChatAgent:
     def __init__(self, config: dict):
         self.config = config
         self.checkpointer = InMemorySaver()
-        self.llm = llm_factory.create(
-            "GEMMA_4_31B",
-            temperature=1,
-            max_tokens=256,
-            safety_settings={
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-            },
-            thinking_level="minimal",
-        )
+        self.llm = llm_factory.create("ZAI_GLM_4_7", temperature=1, max_tokens=256)
 
         self.agent = create_agent(
             model=self.llm,
             tools=CHAT_AGENT_TOOLS,
-            system_prompt=load_prompt("chat_agent"),
+            system_prompt=f"{load_prompt('chat_agent')}\n\n{environment_context()}",
             checkpointer=self.checkpointer,
             state_schema=ChatState,
         )
@@ -134,7 +127,9 @@ class ChatAgent:
 
                 if chunk.get("type", None) == "messages":
                     token, metadata = chunk.get("data", None)
-                    if isinstance(token, AIMessageChunk) and isinstance(token.content, str):
+                    if isinstance(token, AIMessageChunk) and isinstance(
+                        token.content, str
+                    ):
                         if not first_token_seen and token.content:
                             first_token_seen = True
                             latency_tracker.record(

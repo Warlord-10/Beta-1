@@ -6,6 +6,14 @@ import uuid
 
 from src.agents.chatagent.chat_agent import ChatAgent
 from src.asr.asr_service import ASRService
+from src.config.event_bus import (
+    EVENT_BUS,
+    Chunk,
+    PlanReview,
+    TurnEnd,
+    TurnStart,
+    UserMessage,
+)
 from src.config.logger import get_logger
 from src.config.settings import SETTINGS
 from src.observability import Metric, latency_tracker
@@ -182,16 +190,18 @@ class Pipeline:
     # ── workflow-loop (sync; blocking graph execution) ───────────────
     def _workflow_loop(self) -> None:
 
-
         while not self._stop_event.is_set():
             try:
                 task_summary = ComplexTaskQueue.get(timeout=1)
+                logger.info("Workflow loop received task: %s", task_summary)
             except queue.Empty:
                 continue
 
             try:
                 ToggleWorkflow(True)
-                final = run_main_graph(task_summary, on_interrupt=self._handle_workflow_interrupt)
+                final = run_main_graph(
+                    task_summary, on_interrupt=self._handle_workflow_interrupt
+                )
             except Exception:
                 logger.exception("workflow run failed")
                 final = "[workflow failed]"
@@ -201,9 +211,7 @@ class Pipeline:
             self.io_unit.push_to_llm(final)
 
     def _handle_workflow_interrupt(self, payload: dict) -> str:
-        self._safe_call(
-            self._listener.on_plan_review, payload, name="on_plan_review"
-        )
+        self._safe_call(self._listener.on_plan_review, payload, name="on_plan_review")
         return PlanReviewResponseQueue.get()
 
     # ── asr-worker ────────────────────────────────────────────────────
@@ -216,9 +224,7 @@ class Pipeline:
                 continue
             msg = clean_text(full_text)
             full_text = ""
-            self._safe_call(
-                self._listener.on_user_message, msg, name="on_user_message"
-            )
+            self._safe_call(self._listener.on_user_message, msg, name="on_user_message")
             self.submit(msg)
 
 
@@ -243,14 +249,39 @@ class Pipeline_V2:
         t.start()
         self._threads.append(t)
 
-    def start(self):
+    def start(self, audio_enabled: bool = True) -> None:
+        """Spin up worker threads.
+
+        Audio starts ON for headless voice mode; a GUI frontend passes
+        ``audio_enabled=False`` and turns it on via live mode.
+        """
         self._SpawnThread(self.ASRLoop, "asr-worker")
         self._SpawnThread(self._tts.stream, "tts-worker")
         self._SpawnThread(self.ChatLoop, "chat-loop")
         self._SpawnThread(self.WorkflowLoop, "workflow-loop")
+        self.set_audio_enabled(audio_enabled)
 
-        ToggleASR(True)
-        ToggleTTS(True)
+    # ── Frontend command API (GUI → pipeline) ─────────────────────────
+    def submit(self, text: str) -> None:
+        """Queue a typed/spoken user message for the chat agent."""
+        if text and text.strip():
+            self.io_unit.push_to_llm(text.strip())
+
+    def submit_plan_review(self, response: str) -> None:
+        PlanReviewResponseQueue.put(response)
+
+    def set_audio_enabled(self, enabled: bool) -> None:
+        ToggleASR(enabled)
+        ToggleTTS(enabled)
+
+    def stop(self) -> None:
+        # ponytail: the loops are daemon while-True threads — they die on
+        # process exit. stop() just cleans the scheduler for the GUI's finally.
+        self._stop_event.set()
+        try:
+            self._scheduler.shutdown()
+        except Exception:
+            logger.exception("scheduler shutdown failed")
 
     def ChatLoop(self):
         while True:
@@ -261,54 +292,63 @@ class Pipeline_V2:
                 continue
 
     def CallChatAgent(self, user_msg):
-        print("Got a new msg: ", user_msg)
-
+        EVENT_BUS.publish(TurnStart())
         with latency_tracker.measure(Metric.TURN):
             response_stream = self._chat_agent.stream(user_msg)
-
             self._asr.set_vad_threshold(0.9)
 
             for res_chunk in accumulate_sentences(response_stream):
-                print("res_chunk: ", res_chunk)
-                LLMChunkQueue.put(clean_text(res_chunk))
+                sentence = clean_text(res_chunk)
+                if IsTTSEnabled():
+                    LLMChunkQueue.put(sentence)
+                EVENT_BUS.publish(Chunk(sentence))
 
             self._asr.reset_vad_threshold()
-        
-        print(latency_tracker.get_summary())
+        EVENT_BUS.publish(TurnEnd())
 
     def ASRLoop(self):
         final_message = ""
         for text_chunk in self._asr.stream():
-            if text_chunk: 
+            if text_chunk:
                 DrainLLMQueue()
                 final_message = final_message + text_chunk.strip()
 
             if not CheckUserBargeIn() and final_message:
+                EVENT_BUS.publish(UserMessage(final_message))
                 self.io_unit.push_to_llm(final_message)
                 final_message = ""
 
     def WorkflowLoop(self):
         from src.workflow import run_main_graph
-        
+
         while True:
             try:
                 task_summary = ComplexTaskQueue.get(timeout=1)
+                logger.info("Workflow loop received task: %s", task_summary)
             except queue.Empty:
                 continue
 
             try:
                 ToggleWorkflow(True)
-                final = run_main_graph(task_summary, on_interrupt=self._handle_workflow_interrupt)
+                final = run_main_graph(
+                    task_summary, on_interrupt=self._handle_workflow_interrupt
+                )
             except Exception:
                 logger.exception("workflow run failed")
                 final = "[workflow failed]"
             finally:
                 ToggleWorkflow(False)
 
-            self.io_unit.push_to_llm(final)
-    
+            # Feed the result back framed as a completed-task notice — not as if
+            # the user said it — so the chat agent announces the outcome instead
+            # of "replying" to its own workflow output.
+            notice = (
+                "[SYSTEM NOTICE] The delegated background task has finished. "
+                "Announce the outcome to the user in first person, concisely.\n\n"
+                f"Result:\n{final}"
+            )
+            self.io_unit.push_to_llm(notice)
+
     def _handle_workflow_interrupt(self, payload: dict) -> str:
-        # self._safe_call(
-        #     self._listener.on_plan_review, payload, name="on_plan_review"
-        # )
+        EVENT_BUS.publish(PlanReview(payload))
         return PlanReviewResponseQueue.get()
