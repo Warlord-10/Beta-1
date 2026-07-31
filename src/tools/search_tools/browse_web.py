@@ -7,11 +7,15 @@ from ddgs import DDGS
 #     search = DuckDuckGoSearchRun()
 #     return search.invoke(query)
 
+
 @tool
 def regular_search(query: str) -> list[dict[str, str]]:
     """Search the web for information and returns the text results."""
-    results = DDGS().text(query, max_results=5, region="in-hi", safesearch="off", backend="brave")
+    results = DDGS().text(
+        query, max_results=5, region="in-hi", safesearch="off", backend="brave"
+    )
     return results
+
 
 @tool
 def advanced_search(query: str, type: str) -> list[dict[str, str]]:
@@ -25,6 +29,7 @@ def advanced_search(query: str, type: str) -> list[dict[str, str]]:
     elif type == "news":
         results = DDGS().news(query, max_results=5, region="in-hi", safesearch="off")
     return results
+
 
 @tool
 def extract_text(url: str) -> list[dict[str, str]]:

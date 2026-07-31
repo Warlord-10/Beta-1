@@ -26,6 +26,7 @@ from src.config.logger import get_logger
 from src.config.workflow_context import WORKFLOW_CONTEXT, get_workflow_status
 from src.llms import llm_factory
 from src.prompts import load_prompt
+from src.skills import load_skill_text, skill_index
 from src.utils.errors import node_guard
 
 # Structured tools (better than bash: predictable, size-capped output).
@@ -93,6 +94,25 @@ def update_plan(steps: list[str], files_changed: list[str] | None = None) -> str
     return f"Plan recorded:\n{rendered}"
 
 
+@tool
+def load_skill(name: str) -> str:
+    """Load a skill's step-by-step procedure into context.
+
+    Skills are reusable playbooks for common task types. The available skills
+    are listed under "Available skills" in your system prompt. When a task
+    matches one, call this to pull in its full procedure, then use it as the
+    basis for your plan.
+
+    Args:
+        name: The skill name exactly as shown in the skill list.
+
+    Returns:
+        The skill's procedure, or an error if the name is unknown.
+    """
+    logger.info("Loading skill: %s", name)
+    return load_skill_text(name)
+
+
 AUTONOMOUS_TOOLS = [
     # Context gathering (structured)
     read_file,
@@ -106,6 +126,7 @@ AUTONOMOUS_TOOLS = [
     # Planning / shared context
     update_plan,
     get_workflow_status,
+    load_skill,
     # Research
     regular_search,
     advanced_search,
@@ -113,7 +134,7 @@ AUTONOMOUS_TOOLS = [
 ]
 
 llm = llm_factory.create("ZAI_GLM_4_7", temperature=0.7, max_tokens=1024 * 4)
-system_prompt = load_prompt("autonomous_agent")
+system_prompt = f"{load_prompt('autonomous_agent')}\n\n## Available skills\n\n{skill_index()}"
 
 autonomous_agent = create_agent(
     model=llm,
