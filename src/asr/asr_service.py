@@ -15,7 +15,7 @@ from src.asr.vad import VoiceActivityDetector, VoiceActivityDetectorStreaming
 from src.config.logger import get_logger
 from src.config.global_events import *
 from src.asr.aec import aec
-from src.observability import Metric, latency_tracker
+from src.observability import Metric, Stopwatch, latency_tracker
 from src.config.settings import SETTINGS
 
 logger = get_logger("asr.stream")
@@ -54,8 +54,19 @@ class ASRService:
 
         full_audio = np.concatenate(buffer)
         audio_ms = (len(full_audio) / self.sample_rate) * 1000.0
-        with latency_tracker.measure(Metric.STT_TRANSCRIBE, audio_ms=round(audio_ms)):
+        sw = Stopwatch()
+        try:
             return self.asr.transcribe(full_audio)
+        finally:
+            # rtf > 1 means this partial took longer to transcribe than it took
+            # to speak — the cost is fixed model overhead, not audio length.
+            elapsed = sw.elapsed_ms()
+            latency_tracker.record(
+                Metric.STT_TRANSCRIBE,
+                elapsed,
+                audio_ms=round(audio_ms),
+                rtf=round(elapsed / audio_ms, 2) if audio_ms else None,
+            )
 
     def _yield_transcript(self, buffer):
         text = self._transcribe_buffer(buffer)
@@ -113,6 +124,10 @@ class ASRService:
                 speech_blocks = 0
                 silence_blocks = 0
                 utterance_flag = False
+                # Per-block VAD is sub-ms; only the utterance total is worth a
+                # metric (one sample per turn instead of ~20 log lines/second).
+                vad_ms = 0.0
+                vad_blocks = 0
 
                 while IsASREnabled():
                     try:
@@ -136,8 +151,12 @@ class ASRService:
                     block = self.noise_suppressor.process(block)
                     block = downsample_48k_to_16k(block)
 
+                    sw = Stopwatch()
                     speech = self._is_speech_detected(block)
-                    
+                    vad_ms += sw.elapsed_ms()
+                    vad_blocks += 1
+
+
                     if speech:
                         utterance_flag = True
                         speech_blocks += 1
@@ -163,6 +182,11 @@ class ASRService:
                     
                     # End of user speaking, reset all flags
                     if silence_blocks >= self._end_silence_blocks:
+                        latency_tracker.record(
+                            Metric.VAD_UTTERANCE, vad_ms, blocks=vad_blocks
+                        )
+                        vad_ms = 0.0
+                        vad_blocks = 0
                         self.vad.reset()
                         ToggleUserBargeIn(False)
                         utterance_flag = False

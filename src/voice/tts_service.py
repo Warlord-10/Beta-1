@@ -36,6 +36,12 @@ class TTSService:
         self.sample_rate = SETTINGS.TTS_SAMPLE_RATE
         self._leftover = np.array([], dtype="float32")
         self.AudioChunkQueue = Queue()
+        # ponytail: 100 ms jitter buffer. Without it the callback emitted
+        # half-filled blocks padded with zeros whenever synthesis lagged, and the
+        # mid-waveform cut is what you hear as static/clicks. Raise if the synth
+        # is slower than realtime on your box.
+        self._prebuffer = int(self.sample_rate * 0.1)
+        self._playing = False
 
 
     def _callback(self, outdata: np.ndarray, frames: int, time_info, status) -> None:
@@ -44,26 +50,30 @@ class TTSService:
 
         needed = frames
         result = self._leftover
+        target = needed if self._playing else max(needed, self._prebuffer)
 
-        # Drain audio_queue without blocking — pad with silence if needed
-        while len(result) < needed:
+        # Drain audio_queue without blocking
+        while len(result) < target:
             try:
                 chunk = self.AudioChunkQueue.get_nowait()
                 if chunk is _SHUTDOWN:
                     break
-                
+
                 result = np.concatenate([result, chunk])
             except queue.Empty:
                 break
 
-        if len(result) >= needed:
+        if len(result) >= target:
+            self._playing = True
             outdata[:] = result[:needed].reshape(-1, 1)
             self._leftover = result[needed:]
         else:
-            # Pad with silence — avoids underrun noise
-            outdata[: len(result)] = result.reshape(-1, 1)
-            outdata[len(result) :] = 0
-            self._leftover = np.array([], dtype="float32")
+            # Underrun: emit a full block of silence and keep every sample we
+            # have, so playback resumes contiguously instead of being cut
+            # mid-waveform. Re-arms the prebuffer for the next start.
+            outdata[:] = 0
+            self._leftover = result
+            self._playing = False
 
         chunk_for_aec = outdata[:, 0].copy()
         aec.push_speaker(chunk_for_aec)
@@ -79,6 +89,7 @@ class TTSService:
         if flushed:
             logger.debug("Flushed %d audio chunks on barge-in", flushed)
         self._leftover = np.array([], dtype="float32")
+        self._playing = False
         aec.reset_reference()
 
     def generate_audio(self, text: str) -> None:
@@ -87,6 +98,7 @@ class TTSService:
 
         stopwatch = Stopwatch()
         first_chunk_seen = False
+        samples = 0
 
         for audio_chunk in self.tts.synthesize(text):
             if CheckUserBargeIn():
@@ -103,13 +115,26 @@ class TTSService:
             if not first_chunk_seen:
                 first_chunk_seen = True
                 latency_tracker.record(
-                    Metric.TTS_FIRST_AUDIO, stopwatch.elapsed_ms(), provider=self.provider
+                    Metric.TTS_FIRST_AUDIO,
+                    stopwatch.elapsed_ms(),
+                    provider=self.provider,
+                    chars=len(text),
                 )
 
+            samples += chunk.size
             self.AudioChunkQueue.put(chunk)
 
+        # rtf < 1 means synthesis outruns playback (queue stays fed); >= 1 means
+        # the speaker drains faster than we can fill it, i.e. audible gaps.
+        elapsed = stopwatch.elapsed_ms()
+        audio_ms = samples / self.sample_rate * 1000.0
         latency_tracker.record(
-            Metric.TTS_SYNTHESIZE, stopwatch.elapsed_ms(), provider=self.provider
+            Metric.TTS_SYNTHESIZE,
+            elapsed,
+            provider=self.provider,
+            chars=len(text),
+            audio_ms=round(audio_ms),
+            rtf=round(elapsed / audio_ms, 2) if audio_ms else None,
         )
 
     def _ensure_tts(self) -> None:
