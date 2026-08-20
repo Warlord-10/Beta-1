@@ -298,10 +298,11 @@ class Pipeline_V2:
             self._asr.set_vad_threshold(0.9)
 
             for res_chunk in accumulate_sentences(response_stream):
-                sentence = clean_text(res_chunk)
                 if IsTTSEnabled():
-                    LLMChunkQueue.put(sentence)
-                EVENT_BUS.publish(Chunk(sentence))
+                    # TTS-only cleanup: clean_text() strips the boundary space,
+                    # which the UI needs to keep chunks from running together.
+                    LLMChunkQueue.put(clean_text(res_chunk))
+                EVENT_BUS.publish(Chunk(res_chunk))
 
             self._asr.reset_vad_threshold()
         EVENT_BUS.publish(TurnEnd())
@@ -311,7 +312,9 @@ class Pipeline_V2:
         for text_chunk in self._asr.stream():
             if text_chunk:
                 DrainLLMQueue()
-                final_message = final_message + text_chunk.strip()
+                # Space between partials — ASR yields one phrase per pause, and
+                # bare concatenation glued the last word to the next first word.
+                final_message = f"{final_message} {text_chunk.strip()}".strip()
 
             if not CheckUserBargeIn() and final_message:
                 EVENT_BUS.publish(UserMessage(final_message))

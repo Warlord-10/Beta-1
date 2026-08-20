@@ -34,6 +34,7 @@ _LATENCY_UNIT = "ms"
 class Metric:
     """Canonical latency metric names (dot-namespaced per OTel convention)."""
 
+    VAD_UTTERANCE = "vad.utterance"        # total VAD compute over one utterance
     STT_TRANSCRIBE = "stt.transcribe"      # audio buffer → final transcript
     LLM_FIRST_TOKEN = "llm.first_token"    # prompt sent → first token (TTFT)
     LLM_STREAM = "llm.stream"              # prompt sent → stream complete
