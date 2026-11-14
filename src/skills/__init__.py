@@ -1,11 +1,11 @@
-"""src.skills — Markdown-based reusable playbooks for the autonomous agent.
+"""src.skills — Markdown-based reusable playbooks for the agents.
 
 Usage:
-    from src.skills import skill_index, load_skill_text
-    index = skill_index()                 # advertise skills in the system prompt
-    body = load_skill_text("web_research")  # pull a full procedure on demand
+    from src.skills import skill_index, read_skill_body
+    index = skill_index()                   # active skills, for prompts
+    body = read_skill_body("web_research")  # full procedure on demand
 """
 
-from src.skills.loader import load_skill_text, skill_index
+from src.skills.loader import read_skill_body, skill_index
 
-__all__ = ["skill_index", "load_skill_text"]
+__all__ = ["skill_index", "read_skill_body"]

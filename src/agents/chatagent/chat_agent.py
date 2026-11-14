@@ -42,6 +42,9 @@ from src.tools.scheduler_tools import (
 # Web search (lightweight — deep research goes through delegate_to_planner)
 from src.tools.search_tools import regular_search
 
+# Skills (read-only: list and load)
+from src.tools.skill_tools.skill_tool import SKILL_READ_TOOLS
+
 # Safe system tools
 from src.tools.system_tools.safe_bash import safe_bash
 
@@ -88,6 +91,8 @@ CHAT_AGENT_TOOLS = [
     # Memory
     add_to_daily_memory,
     read_daily_memory,
+    # Skills (read-only)
+    *SKILL_READ_TOOLS,
 ]
 
 
