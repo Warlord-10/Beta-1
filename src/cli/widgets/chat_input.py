@@ -79,9 +79,9 @@ class ChatInput(Input):
         # Imported lazily so this widget stays usable in tests without the
         # global-events module being initialised.
         try:
-            from src.config.events import GlobalEvents
+            from src.config.global_events import CheckUserBargeIn
 
-            speaking = GlobalEvents.CheckUserBargeIn()
+            speaking = CheckUserBargeIn()
         except Exception:
             speaking = False
         self._frame += 1

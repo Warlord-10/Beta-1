@@ -113,9 +113,6 @@ class ChatAgent:
     def format_input(self, user_msg: str) -> dict:
         return {"messages": [HumanMessage(content=user_msg)]}
 
-    def chat(self, user_msg: str):
-        return self.agent.invoke(self.format_input(user_msg), config=self.config)
-
     def stream(self, user_msg: str):
         result = self.agent.stream(
             input=self.format_input(user_msg),

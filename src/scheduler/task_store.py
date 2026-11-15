@@ -208,26 +208,6 @@ class TaskStore:
         """Toggle the is_enabled flag. Returns updated record or None."""
         return self.update(task_id, is_enabled=enabled)
 
-    def update_last_result(
-        self, task_id: str, result: str, run_at: Optional[str] = None
-    ) -> None:
-        """Update the last execution result and timestamp."""
-        run_at = run_at or self._now()
-        with self._lock:
-            conn = self._connect()
-            try:
-                conn.execute(
-                    """UPDATE tasks
-                       SET last_task_result = ?, last_run_at = ?, updated_at = ?
-                       WHERE task_id = ?""",
-                    (result, run_at, self._now(), task_id),
-                )
-                conn.commit()
-            finally:
-                conn.close()
-
-        logger.info("Updated last result for task %s", task_id[:8])
-
     def find_by_id_prefix(self, prefix: str) -> Optional[TaskRecord]:
         """Find a task whose ID starts with the given prefix.
 

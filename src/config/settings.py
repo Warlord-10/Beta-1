@@ -21,35 +21,19 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_SETTINGS_FILE = _REPO_ROOT / "config" / "settings.json"
 
 # Keys injected at runtime — never persisted back to settings.json.
-_RUNTIME_KEYS = {"LOG_FILE_PATH", "DEFAULT_CWD"}
+_RUNTIME_KEYS = {"LOG_FILE_PATH"}
 
 
 def _settings_path() -> Path:
     return Path(os.environ.get("BETA1_SETTINGS_FILE", _DEFAULT_SETTINGS_FILE))
 
 
-def load_settings_file() -> dict:
-    path = _settings_path()
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"Settings file not found: {path}. "
-            f"Set BETA1_SETTINGS_FILE or create the file."
-        )
-    with path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        raise ValueError(f"Invalid settings file {path}: expected JSON object.")
-    return data
-
-
 @dataclass
 class Settings:
     LOG_MODE: str = "file"
     NAME: str = "DJ"
-    MODELS_DIR: str = "models"
 
     LOG_FILE_PATH: str = os.path.join(_REPO_ROOT, "logs", f"{date.today()}.log")
-    DEFAULT_CWD: str = os.getcwd()
 
     IS_GUI_ENABLED: bool = True
 
@@ -57,9 +41,6 @@ class Settings:
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4318"
 
     daily_budget_usd: float = 0
-    is_planning_review: bool = False
-
-    planning_review_timeout_s: int = 120
 
     MIC_SAMPLE_RATE: int = 48000
 
@@ -82,7 +63,7 @@ class Settings:
 
     def persistent_keys(self) -> list[str]:
         """Field names that represent real config — excludes runtime-injected
-        keys (log path, cwd). Used by the settings pane to render/save rows."""
+        keys (log path). Used by the settings pane to render/save rows."""
         return [f.name for f in fields(self) if f.name not in _RUNTIME_KEYS]
 
     def save(self) -> str:

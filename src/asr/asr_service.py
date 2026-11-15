@@ -1,7 +1,5 @@
 
 import queue
-import threading
-import time
 import numpy as np
 
 try:
@@ -11,7 +9,7 @@ except ImportError:
 
 from src.asr.factory import get_asr_engine
 from src.asr.denoiser import SpeechDenoiser, downsample_48k_to_16k
-from src.asr.vad import VoiceActivityDetector, VoiceActivityDetectorStreaming
+from src.asr.vad import VoiceActivityDetectorStreaming
 from src.config.logger import get_logger
 from src.config.global_events import *
 from src.asr.aec import aec
@@ -31,15 +29,11 @@ class ASRService:
     ):
         self.sample_rate = SETTINGS.STT_SAMPLE_RATE
 
-        self._block_ms = block_ms
         self._frames_per_block = max(1, block_ms // 10)
         self._barge_in_blocks = max(1, barge_in_ms // block_ms)
         self._partial_pause_blocks = max(1, partial_pause_ms // block_ms)
         self._end_silence_blocks = max(1, end_silence_ms // block_ms)
 
-        self._trailing_pad_blocks = max(1, 100 // block_ms)
-
-        # self.vad = VoiceActivityDetector(threshold=0.7, sample_rate=self.sample_rate)
         self.vad = VoiceActivityDetectorStreaming(threshold=0.7, sample_rate=self.sample_rate)
 
         self._asr_config = SETTINGS.STT_CONFIG

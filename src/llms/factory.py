@@ -5,9 +5,6 @@ Usage:
 
     llm = llm_factory.create("GEMINI_FLASH", temperature=0, max_tokens=1024)
     llm_with_tools = llm_factory.create("GEMINI_FLASH").bind_tools(my_tools)
-
-    # Check token usage
-    print(llm_factory.cost_tracker.get_summary())
 """
 
 from __future__ import annotations
@@ -19,11 +16,7 @@ from typing import Any
 from langchain_core.language_models import BaseChatModel
 
 from src.llms.registry import MODEL_REGISTRY
-from src.llms.cost_tracker import (
-    cost_tracker as _default_tracker,
-    CostTracker,
-    CostTrackerCallback,
-)
+from src.llms.cost_tracker import CostTrackerCallback
 from src.config.logger import get_logger
 
 logger = get_logger("llms.factory")
@@ -78,14 +71,6 @@ _PROVIDER_BUILDERS = {
 
 class LLMFactory:
 
-    def __init__(self, tracker: CostTracker | None = None) -> None:
-        self._cost_tracker = tracker or _default_tracker
-
-    @property
-    def cost_tracker(self) -> CostTracker:
-        """Access the cost tracker to query token usage."""
-        return self._cost_tracker
-
     def create(
         self,
         model_name: str = "GEMINI_FLASH",
@@ -130,7 +115,6 @@ class LLMFactory:
 
         # Attach cost-tracking callback
         tracker_cb = CostTrackerCallback(
-            self._cost_tracker,
             registry_key=model_name,
             model_name=model,
             provider=provider,

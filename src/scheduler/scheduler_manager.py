@@ -10,9 +10,6 @@ Responsible for:
 from __future__ import annotations
 
 import logging
-import uuid
-import json
-from datetime import datetime, timezone
 from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -20,7 +17,6 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.date import DateTrigger
 
-from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.scheduler.models import TaskRecord
 from src.scheduler.task_store import TaskStore

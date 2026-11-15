@@ -12,7 +12,7 @@ load_dotenv()
 
 from src.config.settings import SETTINGS
 from src.cli.tui import TUI
-from src.pipeline import Pipeline, Pipeline_V2
+from src.pipeline import Pipeline_V2
 
 
 def main() -> None:

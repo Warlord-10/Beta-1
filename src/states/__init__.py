@@ -1,8 +1,5 @@
-"""Beta-1 — State definitions for the multi-agent system."""
+"""Beta-1 — State definitions for the agents."""
 
-from src.states.main_state import MainState, TaskItem
+from src.states.main_state import ChatState
 
-__all__ = [
-    "MainState",
-    "TaskItem",
-]
+__all__ = ["ChatState"]

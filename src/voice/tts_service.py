@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import queue
-import threading
 import time
 from queue import Queue
-from typing import Callable, Iterator, Optional
 
 import numpy as np
 import sounddevice as sd
@@ -14,7 +12,6 @@ from src.config.global_events import *
 from src.config.global_queues import LLMChunkQueue
 from src.config.logger import get_logger
 from src.observability import Metric, Stopwatch, latency_tracker
-from src.utils.text_utils import clean_text
 from src.voice.factory import get_tts_engine
 from src.config.settings import SETTINGS
 

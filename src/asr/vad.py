@@ -2,47 +2,11 @@
 
 import numpy as np
 import torch
-from silero_vad import get_speech_timestamps, load_silero_vad, VADIterator
+from silero_vad import load_silero_vad, VADIterator
 
 from src.config.logger import get_logger
 
 logger = get_logger("asr.vad")
-
-class VoiceActivityDetector:
-    """Wraps Silero VAD for detecting speech in numpy audio arrays."""
-
-    def __init__(self, threshold: float = 0.5, sample_rate: int = 16000):
-        try:
-            self.model = load_silero_vad(onnx=True)
-            self.threshold = threshold
-            self.sample_rate = sample_rate
-            logger.info(f"Loaded Silero VAD model (threshold={threshold})")
-        except NameError:
-            raise ImportError("Please install silero-vad first: pip install silero-vad")
-
-    def contains_speech(self, audio: np.ndarray) -> bool:
-        if audio.dtype != np.float32:
-            audio = audio.astype(np.float32)
-
-        audio_tensor = torch.from_numpy(audio)
-        
-        try:
-            timestamps = get_speech_timestamps(
-                audio_tensor, 
-                self.model, 
-                threshold=self.threshold,
-                sampling_rate=self.sample_rate,
-                min_speech_duration_ms=50,
-                return_seconds=False
-            )
-            return len(timestamps) > 0
-        except Exception as e:
-            logger.error(f"VAD Error: {e}")
-            return False
-
-    def change_threshold(self, threshold: float):
-        self.threshold = threshold
-
 
 class VoiceActivityDetectorStreaming:
     def __init__(self, threshold: float = 0.5, sample_rate: int = 16000):

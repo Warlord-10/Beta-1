@@ -1,10 +1,8 @@
 """Text utilities for TTS chunking and sentence accumulation."""
 
 import re
-from typing import Generator, Iterable
 
 from src.config.logger import get_logger
-import asyncio
 
 logger = get_logger("voice.text_utils")
 
@@ -51,38 +49,6 @@ def accumulate_sentences(chunks):
         yield buffer
 
 
-def accumulate_phrases(chunks, soft_break_min: int = 30, hard_break_max: int = 120):
-    """
-    chunks: iterable of strings (LLM stream)
-    yields: phrase-level chunks for low-latency TTS.
-
-    Flushes earlier than ``accumulate_sentences``: any clause-ending punctuation
-    (`.!?,;:`) is a hard break once the buffer is non-trivial; spaces force a
-    flush past ``hard_break_max``.
-    """
-    buffer = ""
-
-    for chunk in chunks:
-        for char in chunk:
-            buffer += char
-
-            if char in ".!?":
-                if buffer.strip():
-                    yield buffer.strip()
-                buffer = ""
-            elif char in ",;:" and len(buffer) > soft_break_min:
-                if buffer.strip():
-                    yield buffer.strip()
-                buffer = ""
-            elif char == " " and len(buffer) > hard_break_max:
-                if buffer.strip():
-                    yield buffer.strip()
-                buffer = ""
-
-    if buffer.strip():
-        yield buffer.strip()
-
-
 def clean_text(text: str) -> str:
     if not text:
         return ""
@@ -92,17 +58,6 @@ def clean_text(text: str) -> str:
     text = re.sub(r'\s+', ' ', text).strip()
 
     return text
-
-def clean_text_with_hindi(text: str) -> str:
-    if not text:
-        return ""
-
-    pattern = r'[^a-zA-Z0-9\s,.\u0900-\u097F]'
-    text = re.sub(pattern, '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-
-    return text
-
 
 def _demo() -> None:
     """Self-check: chunks must re-join into the original text, spaces intact."""

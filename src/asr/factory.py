@@ -1,6 +1,5 @@
 """Factory to dynamically select the best ASR provider based on hardware."""
 
-import platform
 from typing import Any, Dict
 
 from src.asr.base import BaseASR

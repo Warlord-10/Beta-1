@@ -1,12 +1,9 @@
 {
   "LOG_MODE": "file",
   "NAME": "DJ",
-  "MODELS_DIR": "models",
   "OBSERVABILITY_ENABLED": false,
   "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318",
   "daily_budget_usd": 0,
-  "is_planning_review": false,
-  "planning_review_timeout_s": 120,
   // TTS Configuration
   "TTS_PROVIDER": "mlx",
   "TTS_CONFIG": {},

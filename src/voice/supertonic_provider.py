@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterator, Optional
+from typing import Iterator
 import numpy as np
 
 try:
@@ -66,4 +66,3 @@ class SupertonicTTS(BaseTTS):
             total_steps=self.total_steps
         )
         wav = np.asarray(wav, dtype="float32").reshape(-1)
-        pass

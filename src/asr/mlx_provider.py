@@ -7,17 +7,11 @@ from src.config.logger import get_logger
 from src.config.settings import SETTINGS
 import mlx_audio.stt.utils as utils
 import mlx.core as mx
-import warnings
 
 logger = get_logger("asr.mlx")
 
-model_bank = [
-    "whisper-small-mlx",
-    "parakeet-tdt_ctc-110m", 
-    "parakeet-tdt-0.6b-v3",
-    "nemotron-3.5-asr-streaming-0.6b",
-    "nemotron-3.5-asr-streaming-0.6b-8bit"
-]
+# Known-good models: whisper-small-mlx, parakeet-tdt_ctc-110m, parakeet-tdt-0.6b-v3,
+# nemotron-3.5-asr-streaming-0.6b(-8bit)
 
 class MLXProviderASR(BaseASR):
     def __init__(self, model_name="parakeet-tdt_ctc-110m", **kwargs) -> None:
