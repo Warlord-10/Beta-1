@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import queue
 import threading
 import uuid
 
+from src.agents.autonomousagent.autonomous_agent import AutonomousAgent
 from src.agents.chatagent.chat_agent import ChatAgent
 from src.asr.asr_service import ASRService
 from src.config.event_bus import (
@@ -18,7 +20,11 @@ from src.config.logger import get_logger
 from src.observability import Metric, latency_tracker
 from src.scheduler.scheduler_manager import SchedulerManager
 from src.utils.io import IO
-from src.utils.text_utils import accumulate_sentences, clean_text
+from src.utils.text_utils import (
+    accumulate_sentences,
+    async_accumulate_sentences,
+    clean_text,
+)
 from src.voice.tts_service import TTSService
 from src.config.global_events import *
 from src.config.global_queues import *
@@ -123,8 +129,8 @@ class Pipeline_V2:
 
         while True:
             try:
-                task_summary = ComplexTaskQueue.get(timeout=1)
-                logger.info("Workflow loop received task: %s", task_summary)
+                task_id, task_summary = ComplexTaskQueue.get(timeout=1)
+                logger.info("Workflow loop received task %s", task_id)
             except queue.Empty:
                 continue
 
@@ -143,7 +149,7 @@ class Pipeline_V2:
             # the user said it — so the chat agent announces the outcome instead
             # of "replying" to its own workflow output.
             notice = (
-                "[SYSTEM NOTICE] The delegated background task has finished. "
+                f"[SYSTEM NOTICE] Delegated background task {task_id} has finished. "
                 "Announce the outcome to the user in first person, concisely.\n\n"
                 f"Result:\n{final}"
             )
@@ -152,3 +158,68 @@ class Pipeline_V2:
     def _handle_workflow_interrupt(self, payload: dict) -> str:
         EVENT_BUS.publish(PlanReview(payload))
         return PlanReviewResponseQueue.get()
+
+
+class AsyncPipeline(Pipeline_V2):
+    def __init__(self) -> None:
+        super().__init__()
+        self._autonomous_agent = AutonomousAgent(
+            config={"configurable": {"thread_id": str(uuid.uuid4())}}
+        )
+
+    def start(self, audio_enabled: bool = True) -> None:
+        self._SpawnThread(self.ASRLoop, "asr-worker")
+        self._SpawnThread(self._tts.stream, "tts-worker")
+        self.set_audio_enabled(audio_enabled)
+
+    async def run(self, audio_enabled: bool = True) -> None:
+        self.start(audio_enabled)
+        await asyncio.gather(self.AsyncChatLoop(), self.AsyncWorkflowLoop())
+
+    async def AsyncChatLoop(self):
+        while True:
+            user_msg = await self.io_unit.async_get_from_llm()
+            try:
+                await self.CallAsyncChatAgent(user_msg)
+            except Exception:
+                logger.exception("chat turn failed")
+
+    async def CallAsyncChatAgent(self, user_msg: str):
+        EVENT_BUS.publish(TurnStart())
+        with latency_tracker.measure(Metric.TURN):
+            self._asr.set_vad_threshold(0.9)
+            response_stream = self._chat_agent.async_stream(user_msg)
+
+            async for res_chunk in async_accumulate_sentences(response_stream):
+                if IsTTSEnabled():
+                    LLMChunkQueue.put_nowait(clean_text(res_chunk))
+                EVENT_BUS.publish(Chunk(res_chunk))
+
+            self._asr.reset_vad_threshold()
+        EVENT_BUS.publish(TurnEnd())
+        await self._chat_agent.end_turn()
+
+    async def AsyncWorkflowLoop(self):
+        while True:
+            try:
+                task_id, current_task = await asyncio.to_thread(
+                    ComplexTaskQueue.get, timeout=1
+                )
+            except queue.Empty:
+                continue
+
+            try:
+                ToggleWorkflow(True)
+                final = await self._autonomous_agent.arun(current_task, task_id)
+            except Exception:
+                logger.exception("workflow run failed")
+                final = "[workflow failed]"
+            finally:
+                ToggleWorkflow(False)
+
+            notice = (
+                f"[SYSTEM NOTICE] Delegated background task {task_id} has finished. "
+                "Announce the outcome to the user in first person, concisely.\n\n"
+                f"Result:\n{final}"
+            )
+            self.io_unit.push_to_llm(notice)

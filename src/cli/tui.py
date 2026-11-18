@@ -8,6 +8,7 @@ review, audio toggle) go back to the pipeline via its command API.
 
 from __future__ import annotations
 
+import threading
 from typing import Optional, TYPE_CHECKING
 
 from textual import on
@@ -37,7 +38,7 @@ from .panes import (
 from .widgets import AUDIO_AVAILABLE, ChatInput, ChatView, PlanReview
 
 if TYPE_CHECKING:
-    from src.pipeline import Pipeline_V2
+    from src.pipeline import AsyncPipeline
 
 
 class TUI(App):
@@ -72,7 +73,7 @@ class TUI(App):
         Binding("ctrl+d", "toggle_dark", "Theme", show=True),
     ]
 
-    def __init__(self, pipeline: Optional["Pipeline_V2"] = None) -> None:
+    def __init__(self, pipeline: Optional["AsyncPipeline"] = None) -> None:
         super().__init__()
         self._pipeline = pipeline
         self.chat_view = ChatView()
@@ -100,6 +101,7 @@ class TUI(App):
             yield self.chat_input
 
     def on_mount(self) -> None:
+        self._ui_thread = threading.get_ident()
         self.chat_input.focus()
         self.chat_view.post_bot(
             "[bold cyan]Beta-1[/] ready. "
@@ -118,23 +120,31 @@ class TUI(App):
 
     # ── event bus subscriber ────────────────────────────────────────────
     def _on_event(self, event) -> None:
-        """Runs on a pipeline worker thread — marshal every UI mutation onto
-        Textual's loop via call_from_thread."""
+        """Runs on the shared async loop (chat agent) or on a worker thread
+        (ASR) — every UI mutation goes through _ui."""
         if isinstance(event, TurnStart):
-            self.call_from_thread(self.chat_view.start_bot_turn)
+            self._ui(self.chat_view.start_bot_turn)
         elif isinstance(event, Chunk):
-            self.call_from_thread(self.chat_view.append_bot, event.text)
-            self.call_from_thread(self.refresh_status)
+            self._ui(self.chat_view.append_bot, event.text)
+            self._ui(self.refresh_status)
         elif isinstance(event, TurnEnd):
-            self.call_from_thread(self.chat_view.end_bot_turn)
-            self.call_from_thread(self.refresh_status)
+            self._ui(self.chat_view.end_bot_turn)
+            self._ui(self.refresh_status)
         elif isinstance(event, UserMessage):
-            self.call_from_thread(self.chat_view.post_user, event.text)
-            self.call_from_thread(self.refresh_status)
+            self._ui(self.chat_view.post_user, event.text)
+            self._ui(self.refresh_status)
         elif isinstance(event, PlanReviewEvent):
-            self.call_from_thread(self.show_plan_review, event.plan)
+            self._ui(self.show_plan_review, event.plan)
         elif isinstance(event, WorkflowStatus):
-            self.call_from_thread(self._on_workflow_status, event)
+            self._ui(self._on_workflow_status, event)
+
+    def _ui(self, fn, *args) -> None:
+        # Same thread as Textual (events from the async chat loop): call
+        # directly — call_from_thread raises there. Other threads: marshal.
+        if threading.get_ident() == self._ui_thread:
+            fn(*args)
+        else:
+            self.call_from_thread(fn, *args)
 
     def _on_workflow_status(self, event) -> None:
         # Post only on status transitions — the bus fires on every plan/file

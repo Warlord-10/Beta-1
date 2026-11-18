@@ -111,7 +111,7 @@ class LLMFactory:
                 HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
                 HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
             }
-            kwargs["thinking_level"] = "minimal"
+            kwargs.setdefault("thinking_level", "minimal")
 
         # Attach cost-tracking callback
         tracker_cb = CostTrackerCallback(

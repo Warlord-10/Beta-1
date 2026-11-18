@@ -1,8 +1,9 @@
 """Beta-1 — Central configuration / settings.
 
 User-tunable values are loaded from `config/settings.json` at import time
-into a single mutable `SETTINGS` object. The TUI (or any other frontend)
-can mutate attributes at runtime and call `SETTINGS.save()` to persist.
+into a single mutable `SETTINGS` object — read settings from it, never from
+module-level copies. To change one, set the attribute and call
+`SETTINGS.save()`, which rewrites the file.
 
 Override the file location with `BETA1_SETTINGS_FILE`.
 """
@@ -42,6 +43,10 @@ class Settings:
 
     daily_budget_usd: float = 0
 
+    # Chat agent context budget (tokens). The conversation is compacted once
+    # its size crosses this.
+    CHAT_CONTEXT_WINDOW: int = 16000
+
     MIC_SAMPLE_RATE: int = 48000
 
     STT_SAMPLE_RATE: int = 16000
@@ -67,11 +72,7 @@ class Settings:
         return [f.name for f in fields(self) if f.name not in _RUNTIME_KEYS]
 
     def save(self) -> str:
-        """Persist the config fields to the settings JSON file. Returns the path.
-
-        ponytail: writes config/settings.json. When that file is discontinued,
-        drop this method and the settings pane's Save button together.
-        """
+        """Persist the config fields to the settings JSON file. Returns the path."""
         path = _settings_path()
         data = {k: getattr(self, k) for k in self.persistent_keys()}
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,4 +81,25 @@ class Settings:
         return str(path)
 
 
-SETTINGS = Settings()
+def load_settings() -> Settings:
+    """Defaults overlaid with `config/settings.json`. Keys missing from the
+    file are written back so it always lists every setting."""
+    settings = Settings()
+    path = _settings_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {}
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in {path}: {e}") from e
+
+    known = settings.persistent_keys()
+    for key, value in data.items():
+        if key in known:
+            setattr(settings, key, value)
+    if set(known) - set(data):
+        settings.save()
+    return settings
+
+
+SETTINGS = load_settings()

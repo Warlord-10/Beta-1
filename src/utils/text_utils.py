@@ -49,6 +49,45 @@ def accumulate_sentences(chunks):
         yield buffer
 
 
+async def async_accumulate_sentences(chunks):
+    """Async twin of accumulate_sentences for async LLM streams."""
+    buffer = ""
+    # Saw .!? — flush at the next whitespace instead of immediately, so
+    # "tracker.py" / "3.5" stay whole and the boundary space lands at the START
+    # of the next chunk (consumers concatenate chunks verbatim).
+    pending = False
+
+    async for chunk in chunks:
+        for char in chunk:
+            if pending and char.isspace():
+                if buffer:
+                    yield buffer
+                buffer = ""
+                pending = False
+
+            buffer += char
+
+            # Hard break - always split
+            if char in (".", "!", "?"):
+                pending = True
+
+            # Soft break - only if buffer is large enough
+            elif char == "," and len(buffer) > 60:
+                yield buffer
+                buffer = ""
+                pending = False
+
+            # Force break on space if too long
+            elif char == " " and len(buffer) > 120:
+                yield buffer
+                buffer = ""
+                pending = False
+
+    # Flush remaining
+    if buffer:
+        yield buffer
+
+
 def clean_text(text: str) -> str:
     if not text:
         return ""

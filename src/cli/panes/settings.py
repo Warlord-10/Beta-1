@@ -11,6 +11,7 @@ from textual.widgets import Button, Input, Label, Static, Switch
 MUTABLE_KEYS: frozenset[str] = frozenset({
     "NAME",
     "daily_budget_usd",
+    "CHAT_CONTEXT_WINDOW",
 })
 
 # Top-level keys that require a process restart to take effect.

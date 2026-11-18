@@ -1,14 +1,21 @@
 {
   "LOG_MODE": "file",
   "NAME": "DJ",
+  "IS_GUI_ENABLED": true,
   "OBSERVABILITY_ENABLED": false,
   "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4318",
   "daily_budget_usd": 0,
-  // TTS Configuration
-  "TTS_PROVIDER": "mlx",
-  "TTS_CONFIG": {},
+  "CHAT_CONTEXT_WINDOW": 16000,
+  "MIC_SAMPLE_RATE": 48000,
+  "STT_SAMPLE_RATE": 16000,
+  "STT_CONFIG": {
+    "provider": "mlx",
+    "model_name": "parakeet-tdt-0.6b-v3"
+  },
   "TTS_SAMPLE_RATE": 24000,
-  // STT Configuration
-  "STT_CONFIG": {},
-  "STT_SAMPLE_RATE": 16000
+  "TTS_CONFIG": {
+    "provider": "kokoro",
+    "voice_name": "af_heart",
+    "speed": 1.3
+  }
 }

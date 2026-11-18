@@ -1,4 +1,3 @@
-
 import queue
 import numpy as np
 
@@ -34,7 +33,9 @@ class ASRService:
         self._partial_pause_blocks = max(1, partial_pause_ms // block_ms)
         self._end_silence_blocks = max(1, end_silence_ms // block_ms)
 
-        self.vad = VoiceActivityDetectorStreaming(threshold=0.7, sample_rate=self.sample_rate)
+        self.vad = VoiceActivityDetectorStreaming(
+            threshold=0.7, sample_rate=self.sample_rate
+        )
 
         self._asr_config = SETTINGS.STT_CONFIG
         self.noise_suppressor = None
@@ -43,7 +44,7 @@ class ASRService:
         self.UserAudioQueue = queue.Queue()
 
     def _transcribe_buffer(self, buffer: list) -> str:
-        if not buffer: 
+        if not buffer:
             return None
 
         full_audio = np.concatenate(buffer)
@@ -108,7 +109,7 @@ class ASRService:
             with sd.InputStream(
                 samplerate=SETTINGS.MIC_SAMPLE_RATE,
                 channels=1,
-                blocksize=SETTINGS.MIC_SAMPLE_RATE//100,    # 10ms of audio
+                blocksize=SETTINGS.MIC_SAMPLE_RATE // 100,  # 10ms of audio
                 latency="high",
                 callback=self._audio_callback,
             ):
@@ -150,7 +151,6 @@ class ASRService:
                     vad_ms += sw.elapsed_ms()
                     vad_blocks += 1
 
-
                     if speech:
                         utterance_flag = True
                         speech_blocks += 1
@@ -160,20 +160,23 @@ class ASRService:
 
                     if not utterance_flag:
                         continue
-                        
+
                     if speech_blocks >= self._barge_in_blocks:
                         ToggleUserBargeIn(True)
 
                     speech_buffer.append(block)
 
                     # Micro pause, generate partial transcript
-                    if silence_blocks >= self._partial_pause_blocks and speech_blocks > 0:
+                    if (
+                        silence_blocks >= self._partial_pause_blocks
+                        and speech_blocks > 0
+                    ):
                         text = self._yield_transcript(speech_buffer)
                         speech_blocks = 0
                         speech_buffer.clear()
                         if text:
                             yield text
-                    
+
                     # End of user speaking, reset all flags
                     if silence_blocks >= self._end_silence_blocks:
                         latency_tracker.record(

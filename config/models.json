@@ -32,6 +32,10 @@
       "output": 1.50
     }
   },
+  "GEMINI_3_5_FLASH_LITE": {
+    "provider": "google",
+    "model": "gemini-3.5-flash-lite"
+  },
   "GROQ_LLAMA_70B": {
     "provider": "groq",
     "model": "llama-3.3-70b-versatile",
