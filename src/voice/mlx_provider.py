@@ -22,6 +22,14 @@ class MLXProviderTTS(BaseTTS):
             raise ImportError("Please install mlx_audio first: pip install mlx_audio")
 
         self.sample_rate = SETTINGS.TTS_SAMPLE_RATE
+        # Playback and the AEC reference both run at TTS_SAMPLE_RATE; a model
+        # at another rate plays pitch-shifted (e.g. Soprano is 32 kHz).
+        model_rate = getattr(self.tts, "sample_rate", self.sample_rate)
+        if model_rate != self.sample_rate:
+            logger.warning(
+                "%s outputs %d Hz but TTS_SAMPLE_RATE is %d — set TTS_SAMPLE_RATE to %d",
+                model_name, model_rate, self.sample_rate, model_rate,
+            )
 
         self._warmup()
         logger.info("MLX Provider TTS loaded (sample_rate=%d)", self.sample_rate)

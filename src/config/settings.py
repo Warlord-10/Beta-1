@@ -50,6 +50,9 @@ class Settings:
     MIC_SAMPLE_RATE: int = 48000
 
     STT_SAMPLE_RATE: int = 16000
+    # DeepFilterNet noise suppression on the mic path. Off by default: it runs
+    # on every mic block and slows TTS synthesis ~3x via CPU/GIL contention.
+    IS_DEEPFILTERNET_ENABLED: bool = False
     STT_CONFIG: dict[str, Any] = field(
         default_factory=lambda: {
             "provider": "mlx",

@@ -148,9 +148,9 @@ class AutonomousAgent:
                             )
                         yield token.content
 
-        except Exception as e:
+        except Exception:
             logger.exception("chat stream failed")
-            yield f"Got an error: {e}"
+            yield "LLM is facing some issues."
         finally:
             latency_tracker.record(Metric.LLM_STREAM, stopwatch.elapsed_ms())
 
@@ -177,9 +177,9 @@ class AutonomousAgent:
                             )
                         yield token.content
 
-        except Exception as e:
+        except Exception:
             logger.exception("chat stream failed")
-            yield f"Got an error: {e}"
+            yield "LLM is facing some issues."
         finally:
             latency_tracker.record(Metric.LLM_STREAM, stopwatch.elapsed_ms())
 

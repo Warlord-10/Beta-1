@@ -12,6 +12,7 @@ MUTABLE_KEYS: frozenset[str] = frozenset({
     "NAME",
     "daily_budget_usd",
     "CHAT_CONTEXT_WINDOW",
+    "IS_DEEPFILTERNET_ENABLED",
 })
 
 # Top-level keys that require a process restart to take effect.

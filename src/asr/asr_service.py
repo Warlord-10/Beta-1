@@ -89,7 +89,7 @@ class ASRService:
 
     def _ensure_models(self) -> None:
         """Lazily build the MLX models on the calling (worker) thread."""
-        if self.noise_suppressor is None:
+        if self.noise_suppressor is None and SETTINGS.IS_DEEPFILTERNET_ENABLED:
             self.noise_suppressor = SpeechDenoiser()
         if self.asr is None:
             self.asr = get_asr_engine(config=self._asr_config)
@@ -139,12 +139,9 @@ class ASRService:
                     if len(block_frames) < self._frames_per_block:
                         continue
 
-                    block = np.concatenate(block_frames)
+                    raw_block = np.concatenate(block_frames)
                     block_frames.clear()
-
-                    # Denoise + downsample once per block (B ms).
-                    block = self.noise_suppressor.process(block)
-                    block = downsample_48k_to_16k(block)
+                    block = downsample_48k_to_16k(raw_block)
 
                     sw = Stopwatch()
                     speech = self._is_speech_detected(block)
@@ -163,6 +160,17 @@ class ASRService:
 
                     if speech_blocks >= self._barge_in_blocks:
                         ToggleUserBargeIn(True)
+
+                    # DeepFilterNet runs only on blocks of a VAD-detected
+                    # utterance (the pauses inside it too, so the stream stays
+                    # continuous) — idle mic noise never reaches it. Setting is
+                    # read per block so it applies live; the model is built
+                    # here on first use (MLX needs the worker thread).
+                    if SETTINGS.IS_DEEPFILTERNET_ENABLED:
+                        self._ensure_models()
+                        block = downsample_48k_to_16k(
+                            self.noise_suppressor.process(raw_block)
+                        )
 
                     speech_buffer.append(block)
 
@@ -185,6 +193,8 @@ class ASRService:
                         vad_ms = 0.0
                         vad_blocks = 0
                         self.vad.reset()
+                        if self.noise_suppressor is not None:
+                            self.noise_suppressor.reset()
                         ToggleUserBargeIn(False)
                         utterance_flag = False
                         silence_blocks = 0
