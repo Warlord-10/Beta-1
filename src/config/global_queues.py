@@ -3,6 +3,7 @@ from queue import Queue
 
 # User → chat agent (one item per user turn).
 UserInputQueue: Queue = Queue()
+
 # Chat agent → TTS worker (sentence-chunked).
 LLMChunkQueue: Queue = Queue()
 

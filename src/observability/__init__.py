@@ -1,7 +1,7 @@
 """src.observability — Latency instrumentation for the voice pipeline.
 
 Public API:
-    latency_tracker     → LatencyTracker singleton (record / measure / get_summary)
+    latency_tracker     → LatencyTracker singleton (record / measure)
     LatencyTracker      → class
     Stopwatch           → monotonic timer for mid-stream markers (TTFT, TTFB)
     Metric              → canonical latency metric names

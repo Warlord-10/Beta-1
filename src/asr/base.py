@@ -1,7 +1,6 @@
 """Base interface for ASR (Speech-to-Text) Engines."""
 
 from abc import ABC, abstractmethod
-from typing import Optional
 from src.config.settings import SETTINGS
 import numpy as np
 

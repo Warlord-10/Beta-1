@@ -1,4 +1,4 @@
-"""A single chat row: user, bot, or model-thinking."""
+"""A single chat row: user or bot."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ class ChatMessage(Horizontal):
 
     KIND_USER = "user"
     KIND_BOT = "bot"
-    KIND_THINKING = "thinking"
 
     DEFAULT_CSS = """
     ChatMessage {
@@ -32,16 +31,11 @@ class ChatMessage(Horizontal):
     }
     ChatMessage.-user > .bubble { color: $success; }
     ChatMessage.-bot   > .bubble { color: $text; }
-    ChatMessage.-thinking > .bubble {
-        color: $text-muted;
-        text-style: italic;
-    }
     """
 
     _PREFIX = {
         KIND_USER:     "[bold green]❯[/]",
         KIND_BOT:      "[bold cyan]✦[/]",
-        KIND_THINKING: "[magenta]💭[/]",
     }
 
     def __init__(self, text: str = "", *, kind: str = KIND_BOT) -> None:
@@ -61,10 +55,6 @@ class ChatMessage(Horizontal):
     def bot(cls, text: str = "") -> "ChatMessage":
         return cls(text, kind=cls.KIND_BOT)
 
-    @classmethod
-    def thinking(cls, text: str = "") -> "ChatMessage":
-        return cls(text, kind=cls.KIND_THINKING)
-
     # ── render ───────────────────────────────────────────────────────────
     def compose(self) -> ComposeResult:
         self._static = Static(self._bubble_text(), classes="bubble", markup=True)
@@ -76,10 +66,5 @@ class ChatMessage(Horizontal):
     # ── mutation ─────────────────────────────────────────────────────────
     def append(self, chunk: str) -> None:
         self._text += chunk
-        if self._static is not None:
-            self._static.update(self._bubble_text())
-
-    def set_text(self, text: str) -> None:
-        self._text = text
         if self._static is not None:
             self._static.update(self._bubble_text())

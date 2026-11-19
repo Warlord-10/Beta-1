@@ -28,7 +28,6 @@ APM_SAMPLE_RATE = MIC_SAMPLE_RATE
 FRAME_MS = 10
 MIC_FRAME_SAMPLES = MIC_SAMPLE_RATE * FRAME_MS // 1000      # 160
 APM_FRAME_SAMPLES = APM_SAMPLE_RATE * FRAME_MS // 1000      # 160
-SPEAKER_FRAME_SAMPLES = SPEAKER_SAMPLE_RATE * FRAME_MS // 1000  # 240
 
 # Round-trip delay between a sample fed to process_reverse_stream and the same
 # echo arriving at process_stream. With sounddevice latency="high" on macOS this

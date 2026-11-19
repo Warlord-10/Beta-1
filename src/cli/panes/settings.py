@@ -11,14 +11,13 @@ from textual.widgets import Button, Input, Label, Static, Switch
 MUTABLE_KEYS: frozenset[str] = frozenset({
     "NAME",
     "daily_budget_usd",
-    "is_planning_review",
-    "planning_review_timeout_s",
+    "CHAT_CONTEXT_WINDOW",
+    "IS_DEEPFILTERNET_ENABLED",
 })
 
 # Top-level keys that require a process restart to take effect.
 IMMUTABLE_KEYS: frozenset[str] = frozenset({
     "LOG_MODE",
-    "MODELS_DIR",
     "TTS_PROVIDER",
 })
 

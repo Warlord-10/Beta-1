@@ -19,9 +19,6 @@ Grafana + Prometheus + Tempo stack.
 `TTFT` (`llm.first_token`) and `TTFB` (`tts.first_audio`) are the numbers a user
 actually *feels* in a streaming voice agent — watch those first.
 
-Every sample is also kept in-process; `latency_tracker.get_summary()` prints
-p50/p95/avg/min/max without needing the stack running.
-
 ## How it's wired
 
 ```

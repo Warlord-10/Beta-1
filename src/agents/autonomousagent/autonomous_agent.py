@@ -4,7 +4,7 @@ Entry point: ``run_autonomous_agent(task)`` — called from the workflow behind
 the chat agent's ``delegate_to_planner``. The agent:
 
   1. gathers context (reads/greps/lists before deciding anything),
-  2. writes a mutable plan via ``update_plan`` and revises it as it learns,
+  2. for multi-step work, keeps a todo list (``write_todos``) and revises it,
   3. acts with a real terminal (``agent_bash``) plus structured file tools,
   4. verifies each step (runs it, checks the artifact) before moving on.
 
@@ -14,25 +14,27 @@ results never get lost between steps.
 
 from __future__ import annotations
 
-import os
+import uuid
 
 from langchain.agents import create_agent
-from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import HumanMessage
-from langchain_core.tools import tool
+from langchain.agents.middleware import TodoListMiddleware
+from langchain_core.messages import AIMessageChunk, HumanMessage
+from langgraph.checkpoint.memory import InMemorySaver
 
 from src.config.context import environment_context
 from src.config.logger import get_logger
-from src.config.workflow_context import WORKFLOW_CONTEXT, get_workflow_status
+from src.config.workflow_context import get_workflow_status
 from src.llms import llm_factory
+from src.observability import Metric, Stopwatch, latency_tracker
 from src.prompts import load_prompt
 from src.skills import skill_index
-from src.utils.errors import node_guard
+from src.states.main_state import ChatState
 
 # Structured tools (better than bash: predictable, size-capped output).
 from src.tools.file_tools import (
     read_file,
     write_file,
+    edit_file,
     list_directory,
     search_files,
     search_content,
@@ -50,51 +52,8 @@ from src.tools.search_tools import regular_search, advanced_search, extract_text
 
 logger = get_logger("agents.autonomous")
 
-
-class _WorkflowCancelled(Exception):
-    """Raised to abort the ReAct loop when the user cancels."""
-
-
-class _CancelCallback(BaseCallbackHandler):
-    """Aborts the run at the next LLM or tool boundary if cancel was requested."""
-
-    def _check(self) -> None:
-        if WORKFLOW_CONTEXT.is_cancelled():
-            raise _WorkflowCancelled()
-
-    def on_llm_start(self, *args, **kwargs) -> None:
-        self._check()
-
-    def on_tool_start(self, *args, **kwargs) -> None:
-        self._check()
-
-
-@tool
-def update_plan(steps: list[str], files_changed: list[str] | None = None) -> str:
-    """Record or revise your task plan as a checklist.
-
-    Call this right after gathering context, then again whenever the plan
-    changes — mark steps done, add newly-discovered steps, drop dead ones.
-    Prefix each step with its status: ``[ ]`` pending, ``[~]`` in progress,
-    ``[x]`` done, ``[!]`` failed/blocked.
-
-    Always pass ``files_changed`` with EVERY file you have created or edited so
-    far (via agent_bash or write_file). This is how the user and the chat agent
-    see what you touched — keep it accurate and cumulative.
-
-    Args:
-        steps: The full current checklist, one item per step.
-        files_changed: All files created/edited so far (cumulative, relative paths).
-
-    Returns:
-        The rendered plan (also logged and shared with the chat agent).
-    """
-    WORKFLOW_CONTEXT.set_plan(steps)
-    if files_changed:
-        WORKFLOW_CONTEXT.add_files(files_changed)
-    rendered = "\n".join(f"  {s}" for s in steps)
-    logger.info("Plan updated (%d steps):\n%s", len(steps), rendered)
-    return f"Plan recorded:\n{rendered}"
+# ReAct loops need headroom: context → plan → many act/verify steps.
+_RECURSION_LIMIT = 100
 
 
 AUTONOMOUS_TOOLS = [
@@ -106,9 +65,9 @@ AUTONOMOUS_TOOLS = [
     search_content,
     # Acting
     agent_bash,
+    edit_file,
     write_file,
-    # Planning / shared context
-    update_plan,
+    # Shared context
     get_workflow_status,
     # Skills
     *SKILL_TOOLS,
@@ -118,45 +77,118 @@ AUTONOMOUS_TOOLS = [
     extract_text,
 ]
 
-llm = llm_factory.create("ZAI_GLM_4_7", temperature=0.7, max_tokens=1024 * 4)
+class AutonomousAgent:
+    def __init__(self, config: dict):
+        self.config = config
+        self.checkpointer = InMemorySaver()
+        self.llm = llm_factory.create(
+            "GEMINI_3_5_FLASH_LITE",
+            temperature=1,
+            max_tokens=1024 * 16,
+            thinking_level="high",
+        )
 
-autonomous_agent = create_agent(
-    model=llm,
-    tools=AUTONOMOUS_TOOLS,
-    system_prompt=load_prompt("autonomous_agent"),
-)
+        self.agent = create_agent(
+            model=self.llm,
+            tools=AUTONOMOUS_TOOLS,
+            system_prompt=f"{load_prompt('autonomous_agent')}\n\n{environment_context()}",
+            checkpointer=self.checkpointer,
+            state_schema=ChatState,
+            middleware=[TodoListMiddleware()],
+        )
 
-# ReAct loops need headroom: context → plan → many act/verify steps.
-_RECURSION_LIMIT = 100
+    def change_llm(self, new_llm):
+        self.agent = create_agent(
+            model=new_llm,
+            tools=AUTONOMOUS_TOOLS,
+            system_prompt=f"{load_prompt('autonomous_agent')}\n\n{environment_context()}",
+            checkpointer=self.checkpointer,
+            state_schema=ChatState,
+            middleware=[TodoListMiddleware()],
+        )
 
+    def format_input(self, user_msg: str) -> dict:
+        return {"messages": [HumanMessage(content=user_msg)]}
 
-@node_guard("autonomous", "run_autonomous_agent")
-def run_autonomous_agent(task: str) -> str:
-    """Run the autonomous agent to completion and return its final answer."""
-    logger.info("autonomous agent start (cwd=%s): %r", os.getcwd(), task)
-    WORKFLOW_CONTEXT.start(task)
-    opening = (
-        f"{environment_context()}\n"
-        f"Terminal commands run from the working directory above — use paths relative to it.\n\n"
-        f"## Available skills\n{skill_index()}\n\n"
-        f"Task: {task}"
-    )
-    try:
-        result = autonomous_agent.invoke(
-            {"messages": [HumanMessage(content=opening)]},
+    def format_task(self, task: str) -> dict:
+        # Skills are listed per task — new ones can be created at runtime.
+        return self.format_input(f"## Available skills\n{skill_index()}\n\n{task}")
+
+    async def arun(self, task: str, task_id: str) -> str:
+        """Run one task to completion on its own thread and return the final answer."""
+        result = await self.agent.ainvoke(
+            self.format_task(task),
             config={
+                "configurable": {"thread_id": task_id},
                 "recursion_limit": _RECURSION_LIMIT,
-                "callbacks": [_CancelCallback()],
             },
         )
-    except _WorkflowCancelled:
-        WORKFLOW_CONTEXT.finish("cancelled")
-        logger.info("autonomous agent cancelled by user")
-        return "Task cancelled by user before completion."
-    except Exception:
-        WORKFLOW_CONTEXT.finish("failed")
-        raise
-    final = result["messages"][-1].content
-    WORKFLOW_CONTEXT.finish("done")
-    logger.info("autonomous agent done (%d chars)", len(final or ""))
-    return final
+        return result["messages"][-1].text
+
+    async def async_stream(self, user_msg: str):
+        result = self.agent.astream(
+            input=self.format_input(user_msg),
+            config=self.config,
+            stream_mode="messages",
+            version="v2",
+        )
+        stopwatch = Stopwatch()
+        first_token_seen = False
+        try:
+            async for chunk in result:
+                if chunk.get("type", None) == "messages":
+                    token, metadata = chunk.get("data", None)
+                    if isinstance(token, AIMessageChunk) and isinstance(
+                        token.content, str
+                    ):
+                        if not first_token_seen and token.content:
+                            first_token_seen = True
+                            latency_tracker.record(
+                                Metric.LLM_FIRST_TOKEN, stopwatch.elapsed_ms()
+                            )
+                        yield token.content
+
+        except Exception:
+            logger.exception("chat stream failed")
+            yield "LLM is facing some issues."
+        finally:
+            latency_tracker.record(Metric.LLM_STREAM, stopwatch.elapsed_ms())
+
+    def stream(self, user_msg: str):
+        result = self.agent.stream(
+            input=self.format_input(user_msg),
+            config=self.config,
+            stream_mode="messages",
+            version="v2",
+        )
+        stopwatch = Stopwatch()
+        first_token_seen = False
+        try:
+            for chunk in result:
+                if chunk.get("type", None) == "messages":
+                    token, metadata = chunk.get("data", None)
+                    if isinstance(token, AIMessageChunk) and isinstance(
+                        token.content, str
+                    ):
+                        if not first_token_seen and token.content:
+                            first_token_seen = True
+                            latency_tracker.record(
+                                Metric.LLM_FIRST_TOKEN, stopwatch.elapsed_ms()
+                            )
+                        yield token.content
+
+        except Exception:
+            logger.exception("chat stream failed")
+            yield "LLM is facing some issues."
+        finally:
+            latency_tracker.record(Metric.LLM_STREAM, stopwatch.elapsed_ms())
+
+
+def run_autonomous_agent(task: str) -> str:
+    """Sync entry point for Pipeline_V2's workflow (via run_main_graph)."""
+    agent = AutonomousAgent(config={"configurable": {"thread_id": str(uuid.uuid4())}})
+    result = agent.agent.invoke(
+        agent.format_task(task),
+        config={**agent.config, "recursion_limit": _RECURSION_LIMIT},
+    )
+    return result["messages"][-1].text

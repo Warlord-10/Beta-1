@@ -140,17 +140,5 @@ class CostStore:
                 conn.close()
         return float(row["total"]) if row else 0.0
 
-    def recent(self, limit: int = 50) -> list[dict]:
-        with self._lock:
-            conn = self._connect()
-            try:
-                rows = conn.execute(
-                    "SELECT * FROM llm_cost ORDER BY id DESC LIMIT ?",
-                    (limit,),
-                ).fetchall()
-            finally:
-                conn.close()
-        return [dict(r) for r in rows]
-
 
 cost_store = CostStore()

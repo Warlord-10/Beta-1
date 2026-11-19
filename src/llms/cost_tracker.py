@@ -1,16 +1,11 @@
-"""Cost Tracker — tracks input/output token usage per model.
-
-Uses LangChain's callback system so tracking is automatic for every
-LLM call routed through the factory. Also persists each call to the
-SQLite-backed `cost_store` with an estimated dollar cost.
+"""Cost Tracker — LangChain callback that persists every LLM call's token
+usage and estimated dollar cost to the SQLite-backed `cost_store`.
 """
 
 from __future__ import annotations
 
-import threading
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
@@ -21,95 +16,6 @@ from src.cost.pricing import calculate_cost
 from src.cost.store import cost_store
 
 logger = get_logger("llms.cost_tracker")
-
-
-# ── Data containers ──────────────────────────────────────────────────
-
-@dataclass
-class ModelUsage:
-    """Token counts for a single model."""
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cached_tokens: int = 0
-    call_count: int = 0
-
-    @property
-    def total_tokens(self) -> int:
-        return self.input_tokens + self.output_tokens
-
-
-# ── Tracker ──────────────────────────────────────────────────────────
-
-class CostTracker:
-    """Thread-safe, per-model token usage accumulator."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._usage: Dict[str, ModelUsage] = {}
-
-    def record(
-        self,
-        model: str,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-        cached_tokens: int = 0,
-    ) -> None:
-        with self._lock:
-            if model not in self._usage:
-                self._usage[model] = ModelUsage()
-            entry = self._usage[model]
-            entry.input_tokens += input_tokens
-            entry.output_tokens += output_tokens
-            entry.cached_tokens += cached_tokens
-            entry.call_count += 1
-
-    def get_usage(self, model: Optional[str] = None) -> Dict[str, Any]:
-        with self._lock:
-            if model:
-                entry = self._usage.get(model, ModelUsage())
-                return {
-                    model: {
-                        "input_tokens": entry.input_tokens,
-                        "output_tokens": entry.output_tokens,
-                        "cached_tokens": entry.cached_tokens,
-                        "total_tokens": entry.total_tokens,
-                        "call_count": entry.call_count,
-                    }
-                }
-            return {
-                m: {
-                    "input_tokens": u.input_tokens,
-                    "output_tokens": u.output_tokens,
-                    "cached_tokens": u.cached_tokens,
-                    "total_tokens": u.total_tokens,
-                    "call_count": u.call_count,
-                }
-                for m, u in self._usage.items()
-            }
-
-    def get_summary(self) -> str:
-        with self._lock:
-            if not self._usage:
-                return "No LLM usage recorded yet."
-            lines = ["═══ LLM Token Usage ═══"]
-            total_in = total_out = 0
-            for model, u in sorted(self._usage.items()):
-                lines.append(
-                    f"  {model}: "
-                    f"{u.input_tokens:,} in / {u.output_tokens:,} out / "
-                    f"{u.total_tokens:,} total  ({u.call_count} calls)"
-                )
-                total_in += u.input_tokens
-                total_out += u.output_tokens
-            lines.append(
-                f"  ── TOTAL: {total_in:,} in / {total_out:,} out / "
-                f"{total_in + total_out:,} total"
-            )
-            return "\n".join(lines)
-
-    def reset(self) -> None:
-        with self._lock:
-            self._usage.clear()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -136,13 +42,11 @@ class CostTrackerCallback(BaseCallbackHandler):
 
     def __init__(
         self,
-        tracker: CostTracker,
         registry_key: str,
         model_name: str,
         provider: str,
     ) -> None:
         super().__init__()
-        self._tracker = tracker
         self._registry_key = registry_key
         self._model_name = model_name
         self._provider = provider
@@ -158,13 +62,6 @@ class CostTrackerCallback(BaseCallbackHandler):
 
                 if not (input_tokens or output_tokens):
                     continue
-
-                self._tracker.record(
-                    self._registry_key,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cached_tokens=cached_tokens,
-                )
 
                 estimated_cost = calculate_cost(
                     self._registry_key,
@@ -214,5 +111,3 @@ class CostTrackerCallback(BaseCallbackHandler):
             spent, budget,
         )
 
-
-cost_tracker = CostTracker()

@@ -16,5 +16,6 @@ temp.py
 .env
 /logs
 /data
+/chats
 /updates
 /models

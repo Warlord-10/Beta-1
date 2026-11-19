@@ -1,7 +1,4 @@
-
 import queue
-import threading
-import time
 import numpy as np
 
 try:
@@ -11,7 +8,7 @@ except ImportError:
 
 from src.asr.factory import get_asr_engine
 from src.asr.denoiser import SpeechDenoiser, downsample_48k_to_16k
-from src.asr.vad import VoiceActivityDetector, VoiceActivityDetectorStreaming
+from src.asr.vad import VoiceActivityDetectorStreaming
 from src.config.logger import get_logger
 from src.config.global_events import *
 from src.asr.aec import aec
@@ -31,16 +28,14 @@ class ASRService:
     ):
         self.sample_rate = SETTINGS.STT_SAMPLE_RATE
 
-        self._block_ms = block_ms
         self._frames_per_block = max(1, block_ms // 10)
         self._barge_in_blocks = max(1, barge_in_ms // block_ms)
         self._partial_pause_blocks = max(1, partial_pause_ms // block_ms)
         self._end_silence_blocks = max(1, end_silence_ms // block_ms)
 
-        self._trailing_pad_blocks = max(1, 100 // block_ms)
-
-        # self.vad = VoiceActivityDetector(threshold=0.7, sample_rate=self.sample_rate)
-        self.vad = VoiceActivityDetectorStreaming(threshold=0.7, sample_rate=self.sample_rate)
+        self.vad = VoiceActivityDetectorStreaming(
+            threshold=0.7, sample_rate=self.sample_rate
+        )
 
         self._asr_config = SETTINGS.STT_CONFIG
         self.noise_suppressor = None
@@ -49,7 +44,7 @@ class ASRService:
         self.UserAudioQueue = queue.Queue()
 
     def _transcribe_buffer(self, buffer: list) -> str:
-        if not buffer: 
+        if not buffer:
             return None
 
         full_audio = np.concatenate(buffer)
@@ -94,7 +89,7 @@ class ASRService:
 
     def _ensure_models(self) -> None:
         """Lazily build the MLX models on the calling (worker) thread."""
-        if self.noise_suppressor is None:
+        if self.noise_suppressor is None and SETTINGS.IS_DEEPFILTERNET_ENABLED:
             self.noise_suppressor = SpeechDenoiser()
         if self.asr is None:
             self.asr = get_asr_engine(config=self._asr_config)
@@ -114,7 +109,7 @@ class ASRService:
             with sd.InputStream(
                 samplerate=SETTINGS.MIC_SAMPLE_RATE,
                 channels=1,
-                blocksize=SETTINGS.MIC_SAMPLE_RATE//100,    # 10ms of audio
+                blocksize=SETTINGS.MIC_SAMPLE_RATE // 100,  # 10ms of audio
                 latency="high",
                 callback=self._audio_callback,
             ):
@@ -144,18 +139,14 @@ class ASRService:
                     if len(block_frames) < self._frames_per_block:
                         continue
 
-                    block = np.concatenate(block_frames)
+                    raw_block = np.concatenate(block_frames)
                     block_frames.clear()
-
-                    # Denoise + downsample once per block (B ms).
-                    block = self.noise_suppressor.process(block)
-                    block = downsample_48k_to_16k(block)
+                    block = downsample_48k_to_16k(raw_block)
 
                     sw = Stopwatch()
                     speech = self._is_speech_detected(block)
                     vad_ms += sw.elapsed_ms()
                     vad_blocks += 1
-
 
                     if speech:
                         utterance_flag = True
@@ -166,20 +157,34 @@ class ASRService:
 
                     if not utterance_flag:
                         continue
-                        
+
                     if speech_blocks >= self._barge_in_blocks:
                         ToggleUserBargeIn(True)
+
+                    # DeepFilterNet runs only on blocks of a VAD-detected
+                    # utterance (the pauses inside it too, so the stream stays
+                    # continuous) — idle mic noise never reaches it. Setting is
+                    # read per block so it applies live; the model is built
+                    # here on first use (MLX needs the worker thread).
+                    if SETTINGS.IS_DEEPFILTERNET_ENABLED:
+                        self._ensure_models()
+                        block = downsample_48k_to_16k(
+                            self.noise_suppressor.process(raw_block)
+                        )
 
                     speech_buffer.append(block)
 
                     # Micro pause, generate partial transcript
-                    if silence_blocks >= self._partial_pause_blocks and speech_blocks > 0:
+                    if (
+                        silence_blocks >= self._partial_pause_blocks
+                        and speech_blocks > 0
+                    ):
                         text = self._yield_transcript(speech_buffer)
                         speech_blocks = 0
                         speech_buffer.clear()
                         if text:
                             yield text
-                    
+
                     # End of user speaking, reset all flags
                     if silence_blocks >= self._end_silence_blocks:
                         latency_tracker.record(
@@ -188,6 +193,8 @@ class ASRService:
                         vad_ms = 0.0
                         vad_blocks = 0
                         self.vad.reset()
+                        if self.noise_suppressor is not None:
+                            self.noise_suppressor.reset()
                         ToggleUserBargeIn(False)
                         utterance_flag = False
                         silence_blocks = 0

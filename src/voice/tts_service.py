@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import queue
-import threading
 import time
 from queue import Queue
-from typing import Callable, Iterator, Optional
 
 import numpy as np
 import sounddevice as sd
@@ -14,7 +12,6 @@ from src.config.global_events import *
 from src.config.global_queues import LLMChunkQueue
 from src.config.logger import get_logger
 from src.observability import Metric, Stopwatch, latency_tracker
-from src.utils.text_utils import clean_text
 from src.voice.factory import get_tts_engine
 from src.config.settings import SETTINGS
 
@@ -22,6 +19,13 @@ logger = get_logger("tts.service")
 
 # Sentinel for clean shutdown
 _SHUTDOWN = object()
+
+# Silence kept before the first and after the last voiced sample of each TTS
+# chunk. Kokoro pads every chunk with ~300 ms lead / ~370 ms tail, which made
+# ~0.7 s of dead air between sentences.
+_KEEP_SILENCE_S = 0.1
+# |sample| above this counts as voice.
+_SILENCE_LEVEL = 0.01
 
 class TTSService:
     def __init__(self):
@@ -99,6 +103,27 @@ class TTSService:
         stopwatch = Stopwatch()
         first_chunk_seen = False
         samples = 0
+        keep = int(self.sample_rate * _KEEP_SILENCE_S)
+        # Trailing silence of the audio so far. Held back instead of played: if
+        # more voice follows it's a real pause and gets played, otherwise only
+        # `keep` of it is played at the end. Voiced audio is never delayed, so
+        # streaming providers keep their time-to-first-audio.
+        held = np.array([], dtype="float32")
+
+        def play(audio: np.ndarray) -> None:
+            nonlocal first_chunk_seen, samples
+            if audio.size == 0:
+                return
+            if not first_chunk_seen:
+                first_chunk_seen = True
+                latency_tracker.record(
+                    Metric.TTS_FIRST_AUDIO,
+                    stopwatch.elapsed_ms(),
+                    provider=self.provider,
+                    chars=len(text),
+                )
+            samples += audio.size
+            self.AudioChunkQueue.put(audio)
 
         for audio_chunk in self.tts.synthesize(text):
             if CheckUserBargeIn():
@@ -112,17 +137,22 @@ class TTSService:
             if chunk.size == 0:
                 continue
 
-            if not first_chunk_seen:
-                first_chunk_seen = True
-                latency_tracker.record(
-                    Metric.TTS_FIRST_AUDIO,
-                    stopwatch.elapsed_ms(),
-                    provider=self.provider,
-                    chars=len(text),
-                )
+            voiced = np.flatnonzero(np.abs(chunk) > _SILENCE_LEVEL)
+            if voiced.size == 0:
+                if first_chunk_seen:
+                    held = np.concatenate([held, chunk])
+                continue  # silence before any voice is dropped
 
-            samples += chunk.size
-            self.AudioChunkQueue.put(chunk)
+            start = 0
+            if not first_chunk_seen:
+                start = max(0, voiced[0] - keep)  # trim leading silence
+            else:
+                play(held)  # the held silence was a pause inside speech
+            end = voiced[-1] + 1
+            play(chunk[start:end])
+            held = chunk[end:]
+
+        play(held[:keep])  # trim trailing silence
 
         # rtf < 1 means synthesis outruns playback (queue stays fed); >= 1 means
         # the speaker drains faster than we can fill it, i.e. audible gaps.
