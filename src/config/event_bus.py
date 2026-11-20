@@ -53,6 +53,13 @@ class PlanReview:
 
 
 @dataclass
+class UserQuestion:
+    """Beta-large paused and asks the user; the next user message answers it."""
+    question: str
+    options: list[str]
+
+
+@dataclass
 class WorkflowStatus:
     """Live snapshot of the autonomous background task, for GUI progress."""
     task: str

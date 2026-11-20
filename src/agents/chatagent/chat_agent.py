@@ -18,6 +18,7 @@ from src.config.logger import get_logger
 from src.config.settings import SETTINGS
 from src.config.workflow_context import cancel_workflow, get_workflow_status
 from src.llms import llm_factory
+from src.llms.factory import is_timeout
 from src.observability import Metric, Stopwatch, latency_tracker
 from src.prompts import load_prompt
 from src.states.main_state import ChatState
@@ -171,7 +172,9 @@ class ChatAgent:
     def __init__(self, config: dict):
         self.config = config
         self.checkpointer = InMemorySaver()
-        self.llm = llm_factory.create("GEMMA_4_26B", temperature=1, max_tokens=256)
+        # One attempt only: SDK retries back off silently (up to a minute)
+        # while the user waits in silence. Fail fast and say so instead.
+        self.llm = llm_factory.create("GEMMA_4_26B", temperature=1, max_tokens=256, max_retries=1)
         self.summary_llm = llm_factory.create("GEMMA_4_26B", temperature=0, max_tokens=1024)
 
         # Today's conversation is persisted to chats/<date>/beta_1.jsonl and
@@ -289,9 +292,9 @@ class ChatAgent:
                             )
                         yield token.content
 
-        except Exception:
+        except Exception as exc:
             logger.exception("chat stream failed")
-            yield "LLM is facing some issues."
+            yield "LLM request timed out." if is_timeout(exc) else "LLM is facing some issues."
         finally:
             latency_tracker.record(Metric.LLM_STREAM, stopwatch.elapsed_ms())
 
@@ -321,8 +324,8 @@ class ChatAgent:
                             )
                         yield token.content
 
-        except Exception:
+        except Exception as exc:
             logger.exception("chat stream failed")
-            yield "LLM is facing some issues."
+            yield "LLM request timed out." if is_timeout(exc) else "LLM is facing some issues."
         finally:
             latency_tracker.record(Metric.LLM_STREAM, stopwatch.elapsed_ms())

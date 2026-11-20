@@ -15,6 +15,7 @@ from src.config.event_bus import (
     TurnEnd,
     TurnStart,
     UserMessage,
+    UserQuestion,
 )
 from src.config.logger import get_logger
 from src.observability import Metric, latency_tracker
@@ -121,7 +122,7 @@ class Pipeline_V2:
 
             if not CheckUserBargeIn() and final_message:
                 EVENT_BUS.publish(UserMessage(final_message))
-                self.io_unit.push_to_llm(final_message)
+                self.submit(final_message)
                 final_message = ""
 
     def WorkflowLoop(self):
@@ -166,6 +167,35 @@ class AsyncPipeline(Pipeline_V2):
         self._autonomous_agent = AutonomousAgent(
             config={"configurable": {"thread_id": str(uuid.uuid4())}}
         )
+        # Set while beta-large waits on a question: user input goes there,
+        # not to the chat agent.
+        self._pending_answer: asyncio.Future[str] | None = None
+
+    def submit(self, text: str) -> None:
+        """Route a typed/spoken user message: to beta-large's open question if
+        there is one, otherwise to the chat agent. Safe from any thread."""
+        text = text.strip()
+        if not text:
+            return
+        pending = self._pending_answer
+        if pending is None:
+            self.io_unit.push_to_llm(text)
+        else:
+            pending.get_loop().call_soon_threadsafe(_answer, pending, text)
+
+    async def ask_user(self, question: str, options: list[str]) -> str:
+        """Show/speak beta-large's question and wait for the user's answer."""
+        self._pending_answer = asyncio.get_running_loop().create_future()
+        EVENT_BUS.publish(UserQuestion(question, options))
+        if IsTTSEnabled():
+            LLMChunkQueue.put_nowait(
+                clean_text(f"{question} Options: {', '.join(options)}.")
+            )
+        try:
+            answer = await self._pending_answer
+        finally:
+            self._pending_answer = None
+        return _pick_option(answer, options)
 
     def start(self, audio_enabled: bool = True) -> None:
         self._SpawnThread(self.ASRLoop, "asr-worker")
@@ -210,7 +240,9 @@ class AsyncPipeline(Pipeline_V2):
 
             try:
                 ToggleWorkflow(True)
-                final = await self._autonomous_agent.arun(current_task, task_id)
+                final = await self._autonomous_agent.arun(
+                    current_task, task_id, ask=self.ask_user
+                )
             except Exception:
                 logger.exception("workflow run failed")
                 final = "[workflow failed]"
@@ -223,3 +255,15 @@ class AsyncPipeline(Pipeline_V2):
                 f"Result:\n{final}"
             )
             self.io_unit.push_to_llm(notice)
+
+
+def _answer(future: asyncio.Future, text: str) -> None:
+    if not future.done():  # a second quick reply is ignored
+        future.set_result(text)
+
+
+def _pick_option(answer: str, options: list[str]) -> str:
+    """'2' → the 2nd option; anything else is the user's own answer."""
+    if answer.isdigit() and 1 <= int(answer) <= len(options):
+        return options[int(answer) - 1]
+    return answer

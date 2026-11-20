@@ -13,6 +13,7 @@ import os
 
 from typing import Any
 
+import httpx
 from langchain_core.language_models import BaseChatModel
 
 from src.llms.registry import MODEL_REGISTRY
@@ -20,6 +21,19 @@ from src.llms.cost_tracker import CostTrackerCallback
 from src.config.logger import get_logger
 
 logger = get_logger("llms.factory")
+
+# Seconds an LLM request may take before it fails with a timeout. Google
+# counts the whole request, including streaming the full answer.
+LLM_TIMEOUT_S = 20
+
+
+def is_timeout(exc: BaseException | None) -> bool:
+    """True if ``exc``, or any exception it was raised from, is a request timeout."""
+    while exc is not None:
+        if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
 
 
 # ── Provider constructors ────────────────────────────────────────────
@@ -46,6 +60,9 @@ def _build_openrouter(model: str, **kwargs: Any) -> BaseChatModel:
 def _build_nvidia(model: str, **kwargs: Any) -> BaseChatModel:
     from langchain_nvidia import ChatNVIDIA
 
+    # ponytail: ChatNVIDIA has no timeout option (unknown kwargs end up in the
+    # request body), so NVIDIA models run without one.
+    kwargs.pop("timeout", None)
     return ChatNVIDIA(model=model, **kwargs)
 
 
@@ -78,6 +95,7 @@ class LLMFactory:
         temperature: float = 0,
         max_tokens: int | None = None,
         max_retries: int = 6,
+        timeout: float | None = LLM_TIMEOUT_S,
         callbacks: list | None = None,
         **extra: Any,
     ) -> BaseChatModel:
@@ -101,6 +119,8 @@ class LLMFactory:
         }
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
+        if timeout is not None:
+            kwargs["timeout"] = timeout
 
         if provider == "google":
             from langchain_google_genai import HarmBlockThreshold, HarmCategory
