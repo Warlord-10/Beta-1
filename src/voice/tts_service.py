@@ -1,210 +1,237 @@
+"""Text-to-speech playback.
+
+Two pieces work together:
+
+- **TTS worker** (``stream``, its own thread): sleeps on ``LLMChunkQueue``.
+  For each text chunk it synthesises audio, queues it, and starts the
+  speaker stream if it is stopped.
+- **Speaker callback** (``_callback``, called by the sound card every 10 ms
+  while the stream runs): plays the queued audio, hands each block to the
+  echo canceller, and stops the stream once everything has played.
+
+So while the bot is quiet, nothing runs on the speaker side.
+"""
+
 from __future__ import annotations
 
 import queue
 import time
-from queue import Queue
 
 import numpy as np
 import sounddevice as sd
 
 from src.asr.aec import aec
-from src.config.global_events import *
+from src.config.global_events import CheckUserBargeIn, IsTTSEnabled
 from src.config.global_queues import LLMChunkQueue
 from src.config.logger import get_logger
+from src.config.settings import SETTINGS
 from src.observability import Metric, Stopwatch, latency_tracker
 from src.voice.factory import get_tts_engine
-from src.config.settings import SETTINGS
 
 logger = get_logger("tts.service")
 
-# Sentinel for clean shutdown
-_SHUTDOWN = object()
-
-# Silence kept before the first and after the last voiced sample of each TTS
-# chunk. Kokoro pads every chunk with ~300 ms lead / ~370 ms tail, which made
+# Audio buffered before playback starts. Without it, a synth that lags
+# for a moment leaves half-empty blocks, heard as clicks.
+# Raise it if synthesis is slower than real time on your machine.
+_PREBUFFER_S = 0.1
+# Silence kept before the first and after the last voiced sample of each
+# chunk. Kokoro pads chunks with ~300 ms lead / ~370 ms tail, which made
 # ~0.7 s of dead air between sentences.
 _KEEP_SILENCE_S = 0.1
 # |sample| above this counts as voice.
 _SILENCE_LEVEL = 0.01
+_BARGE_IN_POLL_S = 0.05
+
 
 class TTSService:
     def __init__(self):
-        # MLX binds work to the thread-local GPU stream of whichever thread
-        # constructs the model. Building the TTS engine on the main thread but
-        # generating from the tts-worker thread raises "There is no
-        # Stream(gpu, 0) in current thread". Defer construction to stream()
-        # (runs on the worker thread) so load + warmup + execute share a stream.
+        # MLX ties a model to the thread that builds it, so the engine is
+        # built in stream(), on the worker thread that also uses it.
         self._tts_config = SETTINGS.TTS_CONFIG
+        self.provider = self._tts_config.get("provider", "tts")
         self.tts = None
-        self.provider = SETTINGS.TTS_CONFIG.get("provider", "tts")
         self.sample_rate = SETTINGS.TTS_SAMPLE_RATE
-        self._leftover = np.array([], dtype="float32")
-        self.AudioChunkQueue = Queue()
-        # ponytail: 100 ms jitter buffer. Without it the callback emitted
-        # half-filled blocks padded with zeros whenever synthesis lagged, and the
-        # mid-waveform cut is what you hear as static/clicks. Raise if the synth
-        # is slower than realtime on your box.
-        self._prebuffer = int(self.sample_rate * 0.1)
-        self._playing = False
+        self._prebuffer = int(self.sample_rate * _PREBUFFER_S)
+        self._stream: sd.OutputStream | None = None
 
+        # Worker → callback.
+        self._audio: queue.Queue[np.ndarray] = queue.Queue()
+        # Callback-only playback state.
+        self._buffer = np.empty(0, dtype=np.float32)   # taken from the queue, not yet played
+        self._playing = False        # False → wait for a full prebuffer first
+        # Flags shared by the worker and the callback.
+        self._idle = True            # the stream is stopped
+        self._synthesizing = False   # the worker may still queue audio
 
-    def _callback(self, outdata: np.ndarray, frames: int, time_info, status) -> None:
-        if status:
-            logger.warning("Audio status: %s", status)
+    # ---- TTS worker ---------------------------------------------------------
 
-        needed = frames
-        result = self._leftover
-        target = needed if self._playing else max(needed, self._prebuffer)
-
-        # Drain audio_queue without blocking
-        while len(result) < target:
-            try:
-                chunk = self.AudioChunkQueue.get_nowait()
-                if chunk is _SHUTDOWN:
-                    break
-
-                result = np.concatenate([result, chunk])
-            except queue.Empty:
-                break
-
-        if len(result) >= target:
-            self._playing = True
-            outdata[:] = result[:needed].reshape(-1, 1)
-            self._leftover = result[needed:]
-        else:
-            # Underrun: emit a full block of silence and keep every sample we
-            # have, so playback resumes contiguously instead of being cut
-            # mid-waveform. Re-arms the prebuffer for the next start.
-            outdata[:] = 0
-            self._leftover = result
-            self._playing = False
-
-        chunk_for_aec = outdata[:, 0].copy()
-        aec.push_speaker(chunk_for_aec)
-
-    def _flush_audio_queue(self) -> None:
-        flushed = 0
-        while not self.AudioChunkQueue.empty():
-            try:
-                self.AudioChunkQueue.get_nowait()
-                flushed += 1
-            except queue.Empty:
-                break
-        if flushed:
-            logger.debug("Flushed %d audio chunks on barge-in", flushed)
-        self._leftover = np.array([], dtype="float32")
-        self._playing = False
-        aec.reset_reference()
-
-    def generate_audio(self, text: str) -> None:
-        if not text.strip():
-            return
-
-        stopwatch = Stopwatch()
-        first_chunk_seen = False
-        samples = 0
-        keep = int(self.sample_rate * _KEEP_SILENCE_S)
-        # Trailing silence of the audio so far. Held back instead of played: if
-        # more voice follows it's a real pause and gets played, otherwise only
-        # `keep` of it is played at the end. Voiced audio is never delayed, so
-        # streaming providers keep their time-to-first-audio.
-        held = np.array([], dtype="float32")
-
-        def play(audio: np.ndarray) -> None:
-            nonlocal first_chunk_seen, samples
-            if audio.size == 0:
-                return
-            if not first_chunk_seen:
-                first_chunk_seen = True
-                latency_tracker.record(
-                    Metric.TTS_FIRST_AUDIO,
-                    stopwatch.elapsed_ms(),
-                    provider=self.provider,
-                    chars=len(text),
-                )
-            samples += audio.size
-            self.AudioChunkQueue.put(audio)
-
-        for audio_chunk in self.tts.synthesize(text):
-            if CheckUserBargeIn():
-                self._flush_audio_queue()
-                return
-
-            # Normalise to a 1-D float32 array — synthesize() may yield a torch
-            # tensor, or a scalar/0-D array for tiny segments, which would crash
-            # np.concatenate in the audio callback.
-            chunk = np.asarray(audio_chunk, dtype="float32").reshape(-1)
-            if chunk.size == 0:
-                continue
-
-            voiced = np.flatnonzero(np.abs(chunk) > _SILENCE_LEVEL)
-            if voiced.size == 0:
-                if first_chunk_seen:
-                    held = np.concatenate([held, chunk])
-                continue  # silence before any voice is dropped
-
-            start = 0
-            if not first_chunk_seen:
-                start = max(0, voiced[0] - keep)  # trim leading silence
-            else:
-                play(held)  # the held silence was a pause inside speech
-            end = voiced[-1] + 1
-            play(chunk[start:end])
-            held = chunk[end:]
-
-        play(held[:keep])  # trim trailing silence
-
-        # rtf < 1 means synthesis outruns playback (queue stays fed); >= 1 means
-        # the speaker drains faster than we can fill it, i.e. audible gaps.
-        elapsed = stopwatch.elapsed_ms()
-        audio_ms = samples / self.sample_rate * 1000.0
-        latency_tracker.record(
-            Metric.TTS_SYNTHESIZE,
-            elapsed,
-            provider=self.provider,
-            chars=len(text),
-            audio_ms=round(audio_ms),
-            rtf=round(elapsed / audio_ms, 2) if audio_ms else None,
+    def stream(self) -> None:
+        """TTS worker loop: speak every text chunk the LLM sends."""
+        self.tts = self.tts or get_tts_engine(config=self._tts_config)
+        self._stream = sd.OutputStream(
+            samplerate=self.sample_rate,
+            channels=1,
+            dtype="float32",
+            blocksize=self.sample_rate // 100,   # 10 ms: one echo-reference block per callback
+            latency="high",
+            callback=self._callback,
         )
-
-    def _ensure_tts(self) -> None:
-        """Lazily build the MLX TTS engine on the calling (worker) thread."""
-        if self.tts is None:
-            self.tts = get_tts_engine(config=self._tts_config)
-
-    def stream(self):
-        self._ensure_tts()
-        while True:
-            is_tts_enabled_event.wait()
-            
-            with sd.OutputStream(
-                samplerate=self.sample_rate,
-                channels=1,
-                dtype="float32",
-                blocksize=self.sample_rate//100,  # 10 ms @ 24 kHz — one AEC reference frame per callback
-                callback=self._callback,
-                latency="high",
-            ):
-                while IsTTSEnabled():
-                    # Barge-in: user started speaking mid-playback
-                    if CheckUserBargeIn():
-                        self._flush_audio_queue()
-                        time.sleep(0.05)
-                        continue
-
-                    try:
-                        llm_chunk = LLMChunkQueue.get(timeout=0.05)
-                    except queue.Empty:
-                        continue
-
-                    # Shutdown sentinel
-                    if llm_chunk is None:
-                        logger.info("TTS received shutdown sentinel")
-                        self.AudioChunkQueue.put(_SHUTDOWN)
-                        break
-
-                    logger.debug(f"TTS received chunk: {llm_chunk[:40]}")
-                    self.generate_audio(llm_chunk)
+        try:
+            while (text := LLMChunkQueue.get()) is not None:   # sleeps until text arrives
+                self._wait_out_barge_in()
+                if not IsTTSEnabled():
+                    continue
+                self._synthesizing = True
+                try:
+                    self.generate_audio(text)
+                finally:
+                    self._synthesizing = False
+        finally:
+            self._stream.close()
+            logger.info("TTS worker stopped")
 
     def shutdown(self) -> None:
         LLMChunkQueue.put(None)
+
+    @staticmethod
+    def _wait_out_barge_in() -> None:
+        """Hold the rest of the reply while the user talks over the bot."""
+        # ponytail: polls, but only while the user is speaking.
+        while CheckUserBargeIn():
+            time.sleep(_BARGE_IN_POLL_S)
+
+    def generate_audio(self, text: str) -> None:
+        """Synthesise text and queue it for the speaker, trimming dead air."""
+        if not text.strip():
+            return
+        logger.debug("TTS received chunk: %s", text[:40])
+
+        stopwatch = Stopwatch()
+        keep = int(self.sample_rate * _KEEP_SILENCE_S)
+        samples = 0
+        # Trailing silence of the audio so far. Held back instead of played:
+        # if more voice follows it was a real pause and gets played, otherwise
+        # only `keep` of it is played at the end. Voiced audio is never held,
+        # so the time to first audio is unchanged.
+        held = np.empty(0, dtype=np.float32)
+
+        def emit(audio: np.ndarray) -> None:
+            nonlocal samples
+            if audio.size == 0:
+                return
+            if samples == 0:
+                latency_tracker.record(
+                    Metric.TTS_FIRST_AUDIO, stopwatch.elapsed_ms(),
+                    provider=self.provider, chars=len(text),
+                )
+            samples += audio.size
+            self._play(audio)
+
+        for chunk in self.tts.synthesize(text):
+            if CheckUserBargeIn() or not IsTTSEnabled():
+                return   # the callback discards what is already queued
+            # Providers may yield tensors or 0-D arrays: make it a flat float32 array.
+            chunk = np.asarray(chunk, dtype=np.float32).reshape(-1)
+            voiced = np.flatnonzero(np.abs(chunk) > _SILENCE_LEVEL)
+            if voiced.size == 0:
+                if samples:
+                    held = np.concatenate([held, chunk])
+                continue   # silence before the first voice is dropped
+
+            if samples:
+                emit(held)                       # the held silence was a pause in speech
+                start = 0
+            else:
+                start = max(0, voiced[0] - keep)   # trim leading silence
+            end = voiced[-1] + 1
+            emit(chunk[start:end])
+            held = chunk[end:]
+
+        emit(held[:keep])   # trim trailing silence
+        self._record_synthesis(text, samples, stopwatch.elapsed_ms())
+
+    def _record_synthesis(self, text: str, samples: int, elapsed_ms: float) -> None:
+        # rtf < 1: synthesis outruns playback. rtf >= 1: audible gaps.
+        audio_ms = samples / self.sample_rate * 1000.0
+        latency_tracker.record(
+            Metric.TTS_SYNTHESIZE, elapsed_ms,
+            provider=self.provider,
+            chars=len(text),
+            audio_ms=round(audio_ms),
+            rtf=round(elapsed_ms / audio_ms, 2) if audio_ms else None,
+        )
+
+    def _play(self, audio: np.ndarray) -> None:
+        """Queue audio for the speaker and start the stream if it is stopped."""
+        self._audio.put(audio)
+        if self._idle:
+            self._idle = False
+            # ponytail: if the callback un-idles itself at this exact moment,
+            # this restarts a running stream: a brief gap, no lost audio.
+            self._stream.stop()   # no-op if already stopped
+            self._stream.start()
+
+    # ---- speaker callback ---------------------------------------------------
+
+    def _callback(self, outdata: np.ndarray, frames: int, time_info, status) -> None:
+        """The sound card wants the next 10 ms. Runs only while the stream is started."""
+        if status:
+            logger.warning("Audio status: %s", status)
+        out = outdata[:, 0]
+        out.fill(0)
+
+        if CheckUserBargeIn() or not IsTTSEnabled():
+            self._discard_audio()
+        else:
+            self._fill(out)
+        aec.push_speaker(out.copy())
+
+        if self._finished():
+            self._playing = False
+            raise sd.CallbackStop   # plays out the device buffer, then stops
+
+    def _fill(self, out: np.ndarray) -> None:
+        """Copy the next block of queued audio into ``out`` (already silent)."""
+        target = len(out) if self._playing else self._prebuffer
+        while len(self._buffer) < target:
+            try:
+                chunk = self._audio.get_nowait()
+            except queue.Empty:
+                break
+            self._buffer = np.concatenate([self._buffer, chunk])
+
+        if len(self._buffer) < target and self._synthesizing:
+            # Synthesis is behind: play silence and keep what we have, so
+            # speech resumes in one piece instead of being cut mid-waveform.
+            self._playing = False
+            return
+
+        n = min(len(out), len(self._buffer))
+        out[:n] = self._buffer[:n]
+        self._buffer = self._buffer[n:]
+        self._playing = True
+
+    def _finished(self) -> bool:
+        """True once everything queued has been played.
+
+        ``_idle`` is set before the last look at the queue, so audio the
+        worker queues at this exact moment is either seen here, or the worker
+        sees ``_idle`` and restarts the stream. It can't get stuck in between.
+        """
+        if len(self._buffer):
+            return False
+        self._idle = True
+        if self._audio.empty():
+            return True
+        self._idle = False
+        return False
+
+    def _discard_audio(self) -> None:
+        """Drop everything not yet played (barge-in, or TTS turned off)."""
+        while True:
+            try:
+                self._audio.get_nowait()
+            except queue.Empty:
+                break
+        self._buffer = self._buffer[:0]
+        aec.reset_reference()

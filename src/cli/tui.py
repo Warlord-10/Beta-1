@@ -11,6 +11,7 @@ from __future__ import annotations
 import threading
 from typing import Optional, TYPE_CHECKING
 
+from rich.markup import escape
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -24,6 +25,7 @@ from src.config.event_bus import (
     TurnEnd,
     TurnStart,
     UserMessage,
+    UserQuestion,
     WorkflowStatus,
 )
 from src.config.global_events import IsWorkflowActive
@@ -79,6 +81,7 @@ class TUI(App):
         self.chat_view = ChatView()
         self.chat_input = ChatInput()
         self._plan_review = PlanReview()
+        self._question_pending = False
 
     # ── layout ──────────────────────────────────────────────────────────
     def compose(self) -> ComposeResult:
@@ -131,8 +134,11 @@ class TUI(App):
             self._ui(self.chat_view.end_bot_turn)
             self._ui(self.refresh_status)
         elif isinstance(event, UserMessage):
+            self._question_pending = False
             self._ui(self.chat_view.post_user, event.text)
             self._ui(self.refresh_status)
+        elif isinstance(event, UserQuestion):
+            self._ui(self.show_question, event)
         elif isinstance(event, PlanReviewEvent):
             self._ui(self.show_plan_review, event.plan)
         elif isinstance(event, WorkflowStatus):
@@ -171,6 +177,19 @@ class TUI(App):
         self.chat_view.post_bot(PlanReview.render(plan))
         self.refresh_status()
 
+    # ── beta-large question entry point ─────────────────────────────────
+    def show_question(self, event: UserQuestion) -> None:
+        """The pipeline routes the next message to beta-large as the answer."""
+        self._question_pending = True
+        options = "\n".join(
+            f"  [b]{n}.[/] {escape(opt)}" for n, opt in enumerate(event.options, 1)
+        )
+        self.chat_view.post_bot(
+            f"[bold cyan]❓ Beta-large asks:[/] {escape(event.question)}\n\n{options}\n\n"
+            "[dim]Reply with a number, or type your own answer.[/]"
+        )
+        self.refresh_status()
+
     # ── input ───────────────────────────────────────────────────────────
     @on(ChatInput.Submitted, "#chat-input")
     def on_input_submit(self, event: ChatInput.Submitted) -> None:
@@ -195,6 +214,7 @@ class TUI(App):
             self.chat_view.post_bot("[red]No pipeline attached.[/]")
             return
         self._pipeline.submit(text)
+        self._question_pending = False
         self.refresh_status()
 
     # ── commands ────────────────────────────────────────────────────────
@@ -265,13 +285,17 @@ class TUI(App):
             "  │  [cyan]⚙ workflow running[/]"
             if IsWorkflowActive() else ""
         )
+        question_hint = (
+            "  │  [cyan]❓ beta-large is waiting for your answer[/]"
+            if self._question_pending else ""
+        )
         plan_hint = (
             "  │  [yellow]📋 awaiting plan review[/]"
             if self._plan_review.awaiting else ""
         )
         return (
             f"  {live}  │  💬 {self.chat_view.message_count} messages  │  "
-            f"🎛 audio:{audio_src}{workflow_hint}{plan_hint}  │  "
+            f"🎛 audio:{audio_src}{workflow_hint}{question_hint}{plan_hint}  │  "
             f"[dim]Ctrl+L live · Ctrl+K clear · Ctrl+D theme · Ctrl+C quit[/]"
         )
 
