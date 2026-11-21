@@ -13,9 +13,12 @@
     "provider": "mlx",
     "model_name": "parakeet-tdt-0.6b-v3"
   },
-  "TTS_SAMPLE_RATE": 32000,
+  "TTS_SAMPLE_RATE": 24000,
   "TTS_CONFIG": {
     "provider": "mlx",
-    "model_name": "mlx-community/Soprano-1.1-80M-bf16"
+    "model_name": "mlx-community/Kokoro-82M-bf16",
+    "voice": "af_heart",
+    "speed": 1.3,
+    "lang_code": "a"
   }
 }

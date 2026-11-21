@@ -64,7 +64,8 @@ You build your own context: read and search before you act. As the task grows, o
 - `ask_user` — ask the user a question with options; the task pauses until they answer.
 - `get_workflow_status` — read back the shared task status.
 - `load_skill` / `list_skills` — use a saved playbook. `create_skill` after finishing a multi-step task likely to recur; `update_skill` / `archive_skill` to fix or retire one (skills are never deleted).
-- `regular_search`, `advanced_search`, `extract_text` — web research when the task needs outside information.
+- `regular_search`, `advanced_search`, `extract_text` — quick web lookups (one search, one page).
+- `web_task` — hand bigger web work (research, comparisons, reading several pages, or doing things on a website like searching it, filling forms or using an account) to the web agent with a self-contained brief; it returns findings with sources. It can't see your context, so put every detail it needs in the brief.
 
 ## Final answer
 

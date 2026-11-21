@@ -174,8 +174,8 @@ class ChatAgent:
         self.checkpointer = InMemorySaver()
         # One attempt only: SDK retries back off silently (up to a minute)
         # while the user waits in silence. Fail fast and say so instead.
-        self.llm = llm_factory.create("GEMMA_4_26B", temperature=1, max_tokens=256, max_retries=1)
-        self.summary_llm = llm_factory.create("GEMMA_4_26B", temperature=0, max_tokens=1024)
+        self.llm = llm_factory.create("GEMINI_3_1_FLASH_LITE", temperature=1, max_tokens=256, max_retries=1)
+        self.summary_llm = llm_factory.create("GEMMA_4_31B", temperature=0, max_tokens=1024*2)
 
         # Today's conversation is persisted to chats/<date>/beta_1.jsonl and
         # restored on startup. `_seed` holds messages to prepend to the next
@@ -282,15 +282,15 @@ class ChatAgent:
 
                 if chunk.get("type", None) == "messages":
                     token, metadata = chunk.get("data", None)
-                    if isinstance(token, AIMessageChunk) and isinstance(
-                        token.content, str
-                    ):
-                        if not first_token_seen and token.content:
+                    # .text, not .content: Gemini 3 streams content as a list
+                    # of blocks (text + signatures), Gemma as a plain str.
+                    if isinstance(token, AIMessageChunk) and (text := token.text):
+                        if not first_token_seen:
                             first_token_seen = True
                             latency_tracker.record(
                                 Metric.LLM_FIRST_TOKEN, stopwatch.elapsed_ms()
                             )
-                        yield token.content
+                        yield text
 
         except Exception as exc:
             logger.exception("chat stream failed")
@@ -314,15 +314,15 @@ class ChatAgent:
 
                 if chunk.get("type", None) == "messages":
                     token, metadata = chunk.get("data", None)
-                    if isinstance(token, AIMessageChunk) and isinstance(
-                        token.content, str
-                    ):
-                        if not first_token_seen and token.content:
+                    # .text, not .content: Gemini 3 streams content as a list
+                    # of blocks (text + signatures), Gemma as a plain str.
+                    if isinstance(token, AIMessageChunk) and (text := token.text):
+                        if not first_token_seen:
                             first_token_seen = True
                             latency_tracker.record(
                                 Metric.LLM_FIRST_TOKEN, stopwatch.elapsed_ms()
                             )
-                        yield token.content
+                        yield text
 
         except Exception as exc:
             logger.exception("chat stream failed")

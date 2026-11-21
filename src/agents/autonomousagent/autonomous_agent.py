@@ -15,7 +15,6 @@ results never get lost between steps.
 from __future__ import annotations
 
 import uuid
-from typing import Awaitable, Callable
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
@@ -29,6 +28,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from src.agents.autonomousagent.permissions import PermissionMiddleware
+from src.agents.task_runner import NO_USER_ANSWER, AskUser, TaskContext, run_task
 
 from src.config.context import environment_context
 from src.config.logger import get_logger
@@ -56,8 +56,10 @@ from src.tools.system_tools.agent_bash import agent_bash
 # Skills: list, load, create, update, archive.
 from src.tools.skill_tools.skill_tool import SKILL_TOOLS
 
-# Web research.
+# Web research: quick lookups here, bigger web jobs go to the web agent.
 from src.tools.search_tools import regular_search, advanced_search, extract_text
+from src.agents.webagent import web_task
+from src.agents.webagent.web_agent import search_errors_as_results
 
 # Asking the user mid-task (pauses the run until they answer).
 from src.tools.user_tools import ask_user
@@ -75,12 +77,6 @@ _CLEAR_TOOLS_AT = 60_000
 _KEEP_TOOL_RESULTS = 5
 _SUMMARIZE_AT = 150_000
 _KEEP_MESSAGES = 20
-
-# Asks the user a question with options and returns their answer.
-AskUser = Callable[[str, list[str]], Awaitable[str]]
-
-# Answer given to every question when nobody can respond (sync entry point).
-_NO_USER_ANSWER = "The user is not available. Don't do this; continue without it or stop and report."
 
 
 AUTONOMOUS_TOOLS = [
@@ -102,6 +98,7 @@ AUTONOMOUS_TOOLS = [
     regular_search,
     advanced_search,
     extract_text,
+    web_task,
     # User
     ask_user,
 ]
@@ -130,9 +127,11 @@ class AutonomousAgent:
             system_prompt=f"{load_prompt('autonomous_agent')}\n\n{environment_context()}",
             checkpointer=self.checkpointer,
             state_schema=ChatState,
+            context_schema=TaskContext,
             middleware=[
                 TodoListMiddleware(),
                 PermissionMiddleware(),
+                search_errors_as_results(),
                 ContextEditingMiddleware(edits=[ClearToolUsesEdit(
                     trigger=_CLEAR_TOOLS_AT,
                     keep=_KEEP_TOOL_RESULTS,
@@ -166,14 +165,7 @@ class AutonomousAgent:
             "configurable": {"thread_id": task_id},
             "recursion_limit": _RECURSION_LIMIT,
         }
-        result = await self.agent.ainvoke(self.format_task(task), config=config)
-        while interrupts := result.get("__interrupt__"):
-            answers = {
-                i.id: await ask(i.value["question"], i.value["options"])
-                for i in interrupts
-            }
-            result = await self.agent.ainvoke(Command(resume=answers), config=config)
-        return result["messages"][-1].text
+        return await run_task(self.agent, self.format_task(task), config, ask)
 
     async def async_stream(self, user_msg: str):
         result = self.agent.astream(
@@ -188,15 +180,14 @@ class AutonomousAgent:
             async for chunk in result:
                 if chunk.get("type", None) == "messages":
                     token, metadata = chunk.get("data", None)
-                    if isinstance(token, AIMessageChunk) and isinstance(
-                        token.content, str
-                    ):
-                        if not first_token_seen and token.content:
+                    # .text, not .content: Gemini 3 streams content as a list of blocks.
+                    if isinstance(token, AIMessageChunk) and (text := token.text):
+                        if not first_token_seen:
                             first_token_seen = True
                             latency_tracker.record(
                                 Metric.LLM_FIRST_TOKEN, stopwatch.elapsed_ms()
                             )
-                        yield token.content
+                        yield text
 
         except Exception:
             logger.exception("chat stream failed")
@@ -217,15 +208,14 @@ class AutonomousAgent:
             for chunk in result:
                 if chunk.get("type", None) == "messages":
                     token, metadata = chunk.get("data", None)
-                    if isinstance(token, AIMessageChunk) and isinstance(
-                        token.content, str
-                    ):
-                        if not first_token_seen and token.content:
+                    # .text, not .content: Gemini 3 streams content as a list of blocks.
+                    if isinstance(token, AIMessageChunk) and (text := token.text):
+                        if not first_token_seen:
                             first_token_seen = True
                             latency_tracker.record(
                                 Metric.LLM_FIRST_TOKEN, stopwatch.elapsed_ms()
                             )
-                        yield token.content
+                        yield text
 
         except Exception:
             logger.exception("chat stream failed")
@@ -241,6 +231,6 @@ def run_autonomous_agent(task: str) -> str:
     result = agent.agent.invoke(agent.format_task(task), config=config)
     # No user channel on this path: every question gets a "not available".
     while interrupts := result.get("__interrupt__"):
-        answers = {i.id: _NO_USER_ANSWER for i in interrupts}
+        answers = {i.id: NO_USER_ANSWER for i in interrupts}
         result = agent.agent.invoke(Command(resume=answers), config=config)
     return result["messages"][-1].text

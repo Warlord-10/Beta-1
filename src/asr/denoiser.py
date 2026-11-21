@@ -23,8 +23,6 @@ from __future__ import annotations
 import numpy as np
 import soxr
 
-from mlx_audio.sts.models.deepfilternet import DeepFilterNetModel
-
 from src.config.logger import get_logger
 
 logger = get_logger("asr.denoiser")
@@ -46,6 +44,10 @@ class SpeechDenoiser:
     """
 
     def __init__(self, version: int = 3) -> None:
+        # Imported here, not at the top: mlx_audio.sts pulls in transformers and
+        # torch (~170 MB), which nothing else needs while denoising is off.
+        from mlx_audio.sts.models.deepfilternet import DeepFilterNetModel
+
         # v3 is the latest/best; v1/v2 are smaller. Streaming requires v2/v3.
         self.model = DeepFilterNetModel.from_pretrained(version=version)
         self.sample_rate = self.model.config.sample_rate  # 48000

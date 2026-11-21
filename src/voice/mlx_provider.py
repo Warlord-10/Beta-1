@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import mlx.core as mx
 
@@ -13,9 +15,36 @@ from mlx_audio.tts.utils import load
 
 logger = get_logger("voice.mlx")
 
+# Autoregressive models (e.g. Soprano) can miss their stop token and run to
+# their length limit, ending in a loop ("hahaaaa") and then static. Normal
+# speech is ~0.07 s per character; anything far past this is runaway audio.
+_MAX_S_PER_CHAR = 0.25
+_MIN_MAX_S = 3.0
+
+
+def _fix_kokoro_interpolate() -> None:
+    """mlx_audio's Kokoro (still in 0.6.7) sizes a resample with ceil(), so
+    float error (34800 * (1/300) = 116.00000000000001) gives 117 and synthesis
+    fails for ~1 in 6 lengths. Round down, as PyTorch does."""
+    from mlx_audio.tts.models.kokoro import istftnet
+
+    original = istftnet.interpolate
+
+    def interpolate(input, size=None, scale_factor=None, **kwargs):
+        if size is None:
+            size, scale_factor = max(1, int(input.shape[2] * scale_factor)), None
+        return original(input, size=size, scale_factor=scale_factor, **kwargs)
+
+    istftnet.interpolate = interpolate
+
 
 class MLXProviderTTS(BaseTTS):
-    def __init__(self, model_name, **kwargs):
+    def __init__(self, model_name, provider=None, **generate_kwargs):
+        # Remaining TTS_CONFIG keys go to generate(), e.g. Kokoro's
+        # voice, speed and lang_code.
+        self.generate_kwargs = generate_kwargs
+        if "kokoro" in model_name.lower():
+            _fix_kokoro_interpolate()
         try:
             self.tts = load(model_name)
         except ImportError:
@@ -36,7 +65,7 @@ class MLXProviderTTS(BaseTTS):
 
     def _warmup(self) -> None:
         try:
-            for _ in self.tts.generate(text="warmup."):
+            for _ in self.tts.generate(text="warmup.", **self.generate_kwargs):
                 pass
         except Exception:
             logger.exception("MLX Provider TTS warmup failed")
@@ -48,15 +77,21 @@ class MLXProviderTTS(BaseTTS):
 
         logger.debug("Synthesizing: %r", text[:60])
 
+        max_samples = int(max(_MIN_MAX_S, len(text) * _MAX_S_PER_CHAR) * self.sample_rate)
         try:
-            chunks = 0
-            for result in self.tts.generate(text=text):
+            chunks = samples = 0
+            for result in self.tts.generate(text=text, **self.generate_kwargs):
                 audio = result.audio
                 if isinstance(audio, mx.array):
                     mx.eval(audio)
                 chunk = np.asarray(audio, dtype="float32").reshape(-1)
                 if chunk.size == 0:
                     continue
+                if samples + chunk.size > max_samples:
+                    logger.warning("TTS ran away on %r: cut at %.1fs", text[:60], max_samples / self.sample_rate)
+                    yield chunk[: max_samples - samples]
+                    return
+                samples += chunk.size
                 chunks += 1
                 yield chunk
 
