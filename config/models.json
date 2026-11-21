@@ -1,24 +1,7 @@
 {
-  "GEMINI_FLASH": {
-    "provider": "google",
-    "model": "gemini-2.0-flash",
-    "pricing": {
-      "input": 0.10,
-      "output": 0.40,
-      "cached": 0.025
-    }
-  },
   "GEMMA_4_31B": {
     "provider": "google",
     "model": "gemma-4-31b-it",
-    "pricing": {
-      "input": 0.0,
-      "output": 0.0
-    }
-  },
-  "GEMMA_4_26B": {
-    "provider": "google",
-    "model": "gemma-4-26b-a4b-it",
     "pricing": {
       "input": 0.0,
       "output": 0.0
@@ -36,37 +19,9 @@
     "provider": "google",
     "model": "gemini-3.5-flash-lite"
   },
-  "GROQ_LLAMA_70B": {
-    "provider": "groq",
-    "model": "llama-3.3-70b-versatile",
-    "pricing": {
-      "input": 0.59,
-      "output": 0.79
-    }
-  },
   "OR_NEMOTRON": {
     "provider": "openrouter",
     "model": "nvidia/nemotron-3-super-120b-a12b"
-  },
-  "OR_GEMMA4": {
-    "provider": "openrouter",
-    "model": "google/gemma-4-31b-it:free",
-    "pricing": {
-      "input": 0.0,
-      "output": 0.0
-    }
-  },
-  "OR_GLM_4": {
-    "provider": "openrouter",
-    "model": "z-ai/glm-4.5-air:free",
-    "pricing": {
-      "input": 0.0,
-      "output": 0.0
-    }
-  },
-  "DS_V4_FLASH": {
-    "provider": "nvidia",
-    "model": "moonshotai/kimi-k2-instruct-0905"
   },
   "ZAI_GLM_4_7": {
     "provider": "zai",

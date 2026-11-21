@@ -12,7 +12,7 @@ from ddgs import DDGS
 def regular_search(query: str) -> list[dict[str, str]]:
     """Search the web for information and returns the text results."""
     results = DDGS().text(
-        query, max_results=5, region="in-hi", safesearch="off", backend="brave"
+        query, max_results=5, region="in-hi", safesearch="off", backend="auto"
     )
     return results
 

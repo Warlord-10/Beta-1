@@ -228,10 +228,13 @@ class TTSService:
 
     def _discard_audio(self) -> None:
         """Drop everything not yet played (barge-in, or TTS turned off)."""
+        dropped = len(self._buffer)
         while True:
             try:
-                self._audio.get_nowait()
+                dropped += len(self._audio.get_nowait())
             except queue.Empty:
                 break
+        if dropped:   # once per barge-in: the next calls find nothing left
+            logger.info("Speech cut off (barge-in or TTS off): dropped %.1fs of audio", dropped / self.sample_rate)
         self._buffer = self._buffer[:0]
         aec.reset_reference()

@@ -37,4 +37,5 @@ dependencies = [
     "mlx-audio>=0.4.4",
     "mlx>=0.31.2",
     "sherpa-onnx>=1.13.4",
+    "playwright>=1.65.2",
 ]
