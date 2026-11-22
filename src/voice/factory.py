@@ -18,6 +18,9 @@ def get_tts_engine(config: Dict[str, Any] = {}) -> BaseTTS:
     elif provider == "mlx":
         from src.voice.mlx_provider import MLXProviderTTS
         return MLXProviderTTS(**config)
+    elif provider == "phonon":
+        from src.voice.phonon_provider import PhononTTS
+        return PhononTTS(**config)
     else:
         return None
         # raise ValueError(f"Unknown TTS provider: {provider}")

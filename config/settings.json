@@ -9,16 +9,13 @@
   "MIC_SAMPLE_RATE": 48000,
   "STT_SAMPLE_RATE": 16000,
   "IS_DEEPFILTERNET_ENABLED": false,
+
   "STT_CONFIG": {
     "provider": "mlx",
     "model_name": "parakeet-tdt-0.6b-v3"
   },
+
   "TTS_SAMPLE_RATE": 24000,
-  "TTS_CONFIG": {
-    "provider": "mlx",
-    "model_name": "mlx-community/Kokoro-82M-bf16",
-    "voice": "af_heart",
-    "speed": 1.3,
-    "lang_code": "a"
-  }
+  "TTS_CONFIG": {"provider": "phonon", "voice_name": "Easton"}
+
 }

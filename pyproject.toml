@@ -34,8 +34,9 @@ dependencies = [
     "ddgs>=9.14.2",
     "opentelemetry-sdk>=1.27.0",
     "opentelemetry-exporter-otlp-proto-http>=1.27.0",
-    "mlx-audio>=0.4.4",
-    "mlx>=0.31.2",
+    "mlx-audio>=0.6.7",
+    "mlx>=0.32.4",
     "sherpa-onnx>=1.13.4",
     "playwright>=1.65.2",
+    "ptts>=0.7.1",
 ]
