@@ -14,14 +14,17 @@ from src.config.settings import SETTINGS
 logger = get_logger("voice.kokoro")
 
 class KokoroTTS(BaseTTS):
-    def __init__(self, voice_name: str = "af_heart", speed: float = 1.3, **kwargs) -> None:
+    def __init__(
+        self, model_name: str = "hexgrad/Kokoro-82M", voice_name: str = "af_heart",
+        speed: float = 1.3, **kwargs,
+    ) -> None:
         self.sample_rate = SETTINGS.TTS_SAMPLE_RATE
         self.voice_name = voice_name
         self.speed = speed
 
         lang_code = voice_name[0] if voice_name else "a"
         logger.info("Initializing Kokoro TTS (lang=%s, voice=%s)", lang_code, voice_name)
-        self.pipeline = KPipeline(lang_code=lang_code, repo_id="hexgrad/Kokoro-82M")
+        self.pipeline = KPipeline(lang_code=lang_code, repo_id=model_name)
         self._warmup()
         logger.info("Kokoro TTS ready")
 

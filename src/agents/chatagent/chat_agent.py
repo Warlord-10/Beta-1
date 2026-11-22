@@ -4,6 +4,7 @@ import uuid
 from datetime import date
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import after_model
 from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage
 from langchain_core.messages import messages_to_dict
 from langchain_core.messages.utils import count_tokens_approximately
@@ -12,6 +13,7 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
 from src.config.context import environment_context
+from src.config.event_bus import EVENT_BUS, ToolCall
 from src.config.global_events import *
 from src.config.global_queues import *
 from src.config.logger import get_logger
@@ -110,6 +112,13 @@ def delegate_to_planner(task_summary: str, runtime: ToolRuntime) -> str:
     """
 
 
+@after_model
+def _publish_tool_calls(state, runtime) -> None:
+    """Tell the UI which tools the model just decided to call."""
+    for call in state["messages"][-1].tool_calls:
+        EVENT_BUS.publish(ToolCall(call["name"], call["args"]))
+
+
 CHAT_AGENT_TOOLS = [
     # File inspection
     read_file,
@@ -175,7 +184,9 @@ class ChatAgent:
         # One attempt only: SDK retries back off silently (up to a minute)
         # while the user waits in silence. Fail fast and say so instead.
         self.llm = llm_factory.create("GEMINI_3_1_FLASH_LITE", temperature=1, max_tokens=256, max_retries=1)
-        self.summary_llm = llm_factory.create("GEMMA_4_31B", temperature=0, max_tokens=1024*2)
+        # Not Gemma: its free tier allows 16k input tokens/minute, the same as
+        # CHAT_CONTEXT_WINDOW, so summarising a full context always hit 429.
+        self.summary_llm = llm_factory.create("GEMINI_3_1_FLASH_LITE", temperature=0, max_tokens=1024*2)
 
         # Today's conversation is persisted to chats/<date>/beta_1.jsonl and
         # restored on startup. `_seed` holds messages to prepend to the next
@@ -192,6 +203,7 @@ class ChatAgent:
             system_prompt=f"{load_prompt('chat_agent')}\n\n{environment_context()}",
             checkpointer=self.checkpointer,
             state_schema=ChatState,
+            middleware=[_publish_tool_calls],
         )
 
     def change_llm(self, new_llm):
@@ -201,6 +213,7 @@ class ChatAgent:
             system_prompt=f"{load_prompt('chat_agent')}\n\n{environment_context()}",
             checkpointer=self.checkpointer,
             state_schema=ChatState,
+            middleware=[_publish_tool_calls],
         )
 
     def format_input(self, user_msg: str) -> dict:

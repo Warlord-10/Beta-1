@@ -18,6 +18,7 @@ from src.config.event_bus import (
     UserQuestion,
 )
 from src.config.logger import get_logger
+from src.config.settings import SETTINGS
 from src.observability import Metric, latency_tracker
 from src.scheduler.scheduler_manager import SchedulerManager
 from src.utils.io import IO
@@ -77,6 +78,13 @@ class Pipeline_V2:
     def set_audio_enabled(self, enabled: bool) -> None:
         ToggleASR(enabled)
         ToggleTTS(enabled)
+
+    def bot_speaking(self) -> bool:
+        return self._tts.playing
+
+    def context_usage(self) -> tuple[int, int]:
+        """Chat agent context: (tokens used, window size)."""
+        return self._chat_agent.context_tokens, SETTINGS.CHAT_CONTEXT_WINDOW
 
     def stop(self) -> None:
         # ponytail: the loops are daemon while-True threads — they die on

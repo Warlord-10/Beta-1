@@ -15,12 +15,13 @@ from rich.markup import escape
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container
-from textual.widgets import Header, Static, TabbedContent, TabPane
+from textual.containers import Container, Horizontal
+from textual.widgets import Button, Header, Static, TabbedContent, TabPane
 
 from src.config.event_bus import (
     EVENT_BUS,
     Chunk,
+    ToolCall,
     PlanReview as PlanReviewEvent,
     TurnEnd,
     TurnStart,
@@ -28,7 +29,13 @@ from src.config.event_bus import (
     UserQuestion,
     WorkflowStatus,
 )
-from src.config.global_events import IsWorkflowActive
+from src.config.global_events import (
+    IsASREnabled,
+    IsTTSEnabled,
+    IsWorkflowActive,
+    ToggleASR,
+    ToggleTTS,
+)
 
 from .panes import (
     CostsPane,
@@ -37,7 +44,14 @@ from .panes import (
     SchedulesPane,
     SettingsPane,
 )
-from .widgets import AUDIO_AVAILABLE, ChatInput, ChatView, PlanReview
+from .widgets import (
+    AUDIO_AVAILABLE,
+    ChatInput,
+    ChatView,
+    ContextBar,
+    PlanReview,
+    VoiceMeter,
+)
 
 if TYPE_CHECKING:
     from src.pipeline import AsyncPipeline
@@ -52,7 +66,7 @@ class TUI(App):
     TAB_IDS = ("chat", "settings", "schedules", "costs", "database", "editor")
 
     CSS = """
-    Screen { background: $surface; }
+    Screen { background: $surface; layers: base overlay; }
     #main-tabs { height: 1fr; }
     TabbedContent Tabs { background: $panel; }
     #bottom-area {
@@ -60,6 +74,26 @@ class TUI(App):
         dock: bottom;
         background: $surface;
     }
+    #meter-row {
+        height: 1;
+        margin: 0 2;
+    }
+    #audio-toggles {
+        layer: overlay;
+        dock: right;
+        width: auto;
+        height: 1;
+        offset-y: 1;
+    }
+    #audio-toggles Button {
+        width: 4;
+        min-width: 4;
+        height: 2;
+        margin-left: 1;
+        content-align: center middle;
+    }
+    #audio-toggles Button.-success { background: $success; }
+    #audio-toggles Button.-error { background: $error; }
     #status-bar {
         height: 1;
         background: $panel;
@@ -70,7 +104,7 @@ class TUI(App):
 
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit", show=True),
-        Binding("ctrl+l", "toggle_live", "Live", show=True),
+        Binding("ctrl+l", "toggle_mic", "Mic", show=True),
         Binding("ctrl+k", "clear_chat", "Clear", show=True),
         Binding("ctrl+d", "toggle_dark", "Theme", show=True),
     ]
@@ -80,12 +114,20 @@ class TUI(App):
         self._pipeline = pipeline
         self.chat_view = ChatView()
         self.chat_input = ChatInput()
+        self.voice_meter = VoiceMeter(
+            bot_speaking=pipeline.bot_speaking if pipeline else (lambda: False)
+        )
+        self.context_bar = ContextBar()
         self._plan_review = PlanReview()
         self._question_pending = False
 
     # ── layout ──────────────────────────────────────────────────────────
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
+        # Overlaid on the right end of the tab row.
+        with Horizontal(id="audio-toggles"):
+            yield Button("", id="mic", compact=True)
+            yield Button("", id="speaker", compact=True)
         with TabbedContent(initial="chat", id="main-tabs"):
             with TabPane("💬 Chat", id="chat"):
                 yield self.chat_view
@@ -101,6 +143,9 @@ class TUI(App):
                 yield EditorPane()
         with Container(id="bottom-area"):
             yield Static(self._status_text(), id="status-bar", markup=True)
+            with Horizontal(id="meter-row"):
+                yield self.voice_meter
+                yield self.context_bar
             yield self.chat_input
 
     def on_mount(self) -> None:
@@ -133,6 +178,8 @@ class TUI(App):
         elif isinstance(event, TurnEnd):
             self._ui(self.chat_view.end_bot_turn)
             self._ui(self.refresh_status)
+        elif isinstance(event, ToolCall):
+            self._ui(self.chat_view.post_tool, event.name, event.args)
         elif isinstance(event, UserMessage):
             self._question_pending = False
             self._ui(self.chat_view.post_user, event.text)
@@ -162,12 +209,12 @@ class TUI(App):
         icon = {"running": "⚙", "done": "✅", "failed": "❌",
                 "cancelled": "🛑"}.get(event.status, "•")
         if event.status == "running":
-            self.chat_view.post_bot(f"{icon} Background task started: [b]{event.task}[/]")
+            self.chat_view.post_bot(f"{icon} Background task started: [b]{escape(event.task)}[/]")
         else:
             files = ", ".join(event.files_changed) or "none"
             self.chat_view.post_bot(
-                f"{icon} Background task {event.status}: [b]{event.task}[/]\n"
-                f"[dim]Files changed: {files}[/]"
+                f"{icon} Background task {event.status}: [b]{escape(event.task)}[/]\n"
+                f"[dim]Files changed: {escape(files)}[/]"
             )
         self.refresh_status()
 
@@ -231,8 +278,10 @@ class TUI(App):
         elif cmd in self.TAB_IDS:
             self.query_one(TabbedContent).active = cmd
             self.chat_view.post_bot(f"📂 Switched to the [b]{cmd}[/] tab.")
-        elif cmd == "live":
-            self.action_toggle_live()
+        elif cmd == "mic":
+            self.action_toggle_mic()
+        elif cmd == "speaker":
+            self.action_toggle_speaker()
         elif cmd == "help":
             self.chat_view.post_bot(self._help_text())
         elif cmd == "clear":
@@ -266,7 +315,8 @@ class TUI(App):
             "  [b]/costs[/]      Open the cost tab\n"
             "  [b]/database[/]   Open the live SQL tab\n"
             "  [b]/editor[/]     Open the file editor tab\n"
-            "  [b]/live[/]       Toggle live audio mode (Ctrl+L)\n"
+            "  [b]/mic[/]        Toggle the microphone (Ctrl+L)\n"
+            "  [b]/speaker[/]    Toggle the speaker\n"
             "  [b]/clear[/]      Clear the conversation (Ctrl+K)\n"
             "  [b]/theme[/]      Toggle dark/light theme (Ctrl+D)\n"
             "  [b]/approve[/]    Approve the current plan (when prompted)\n"
@@ -277,9 +327,6 @@ class TUI(App):
 
     # ── status bar ──────────────────────────────────────────────────────
     def _status_text(self) -> str:
-        live = (
-            "[bold red]● LIVE[/]" if self.chat_input.live else "[dim]○ idle[/]"
-        )
         audio_src = "mic" if AUDIO_AVAILABLE else "sim"
         workflow_hint = (
             "  │  [cyan]⚙ workflow running[/]"
@@ -294,16 +341,29 @@ class TUI(App):
             if self._plan_review.awaiting else ""
         )
         return (
-            f"  {live}  │  💬 {self.chat_view.message_count} messages  │  "
+            f"  💬 {self.chat_view.message_count} messages  │  "
             f"🎛 audio:{audio_src}{workflow_hint}{question_hint}{plan_hint}  │  "
-            f"[dim]Ctrl+L live · Ctrl+K clear · Ctrl+D theme · Ctrl+C quit[/]"
+            f"[dim]Ctrl+L mic · Ctrl+K clear · Ctrl+D theme · Ctrl+C quit[/]"
         )
 
     def refresh_status(self) -> None:
         try:
             self.query_one("#status-bar", Static).update(self._status_text())
+            if self._pipeline is not None:
+                self.context_bar.show(*self._pipeline.context_usage())
+            self._refresh_toggles()
         except Exception:
             pass
+
+    def _refresh_toggles(self) -> None:
+        for button_id, on, label in (
+            ("#mic", IsASREnabled(), ("🎤", "🎤")),
+            ("#speaker", IsTTSEnabled(), ("🔊", "🔇")),
+        ):
+            button = self.query_one(button_id, Button)
+            button.label = label[0] if on else label[1]
+            button.tooltip = f"{button_id[1:].title()} {'on' if on else 'off'}"
+            button.variant = "success" if on else "error"
 
     # ── tab refresh ─────────────────────────────────────────────────────
     def _refresh_live_tabs(self) -> None:
@@ -331,25 +391,18 @@ class TUI(App):
             self.chat_input.focus()
 
     # ── actions ─────────────────────────────────────────────────────────
-    def action_toggle_live(self) -> None:
-        if self.chat_input.live:
-            self.chat_input.exit_live_mode()
-            if self._pipeline is not None:
-                self._pipeline.set_audio_enabled(False)
-            self.chat_view.post_bot("🔇 Live mode off — mic & speakers muted.")
-        else:
-            self.chat_input.enter_live_mode()
-            if self._pipeline is not None:
-                self._pipeline.set_audio_enabled(True)
-            if AUDIO_AVAILABLE:
-                self.chat_view.post_bot(
-                    "🎤 Live mode on — mic & speakers active."
-                )
-            else:
-                self.chat_view.post_bot(
-                    "🎤 Live mode on (no microphone detected — install "
-                    "[b]sounddevice[/] for real input)."
-                )
+    @on(Button.Pressed, "#mic")
+    def action_toggle_mic(self) -> None:
+        ToggleASR(not IsASREnabled())
+        self.chat_view.post_bot("🎤 Mic on." if IsASREnabled() else "🎤 Mic off.")
+        self.chat_input.focus()  # a button click takes focus
+        self.refresh_status()
+
+    @on(Button.Pressed, "#speaker")
+    def action_toggle_speaker(self) -> None:
+        ToggleTTS(not IsTTSEnabled())
+        self.chat_view.post_bot("🔊 Speaker on." if IsTTSEnabled() else "🔇 Speaker off.")
+        self.chat_input.focus()  # a button click takes focus
         self.refresh_status()
 
     def action_clear_chat(self) -> None:

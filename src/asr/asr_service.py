@@ -37,7 +37,7 @@ class ASRService:
             threshold=0.7, sample_rate=self.sample_rate
         )
 
-        self._asr_config = SETTINGS.STT_CONFIG
+        self._asr_config = SETTINGS.STT_MODEL_LIST[SETTINGS.STT_CONFIG]
         self.noise_suppressor = None
         self.asr = None
 
@@ -201,3 +201,8 @@ class ASRService:
                         speech_blocks = 0
                         speech_buffer.clear()
                         yield None
+
+            # Mic turned off, possibly mid-utterance: drop it, or the
+            # speaking flag stays set and TTS waits on it forever.
+            ToggleUserBargeIn(False)
+            self.vad.reset()

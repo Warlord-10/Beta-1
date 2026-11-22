@@ -9,13 +9,83 @@
   "MIC_SAMPLE_RATE": 48000,
   "STT_SAMPLE_RATE": 16000,
   "IS_DEEPFILTERNET_ENABLED": false,
-
-  "STT_CONFIG": {
-    "provider": "mlx",
-    "model_name": "parakeet-tdt-0.6b-v3"
+  "STT_MODEL_LIST": {
+    "parakeet-0.6b-v3": {
+      "provider": "mlx",
+      "model_name": "parakeet-tdt-0.6b-v3"
+    },
+    "parakeet-110m": {
+      "provider": "mlx",
+      "model_name": "parakeet-tdt_ctc-110m"
+    },
+    "nemotron-streaming-0.6b": {
+      "provider": "mlx",
+      "model_name": "nemotron-3.5-asr-streaming-0.6b"
+    },
+    "fluid-speech-pro": {
+      "provider": "mlx",
+      "model_name": "FluidVoice-Labs/fluid-speech-pro-mlx",
+      "clean_mode": true
+    },
+    "rumble-2-flash": {
+      "provider": "mlx",
+      "model_name": "TypeWhisper/Rumble-2-Flash-8bit",
+      "max_tokens": 256
+    }
   },
-
-  "TTS_SAMPLE_RATE": 24000,
-  "TTS_CONFIG": {"provider": "phonon", "voice_name": "Easton"}
-
+  "STT_CONFIG": "fluid-speech-pro",
+  "TTS_MODEL_LIST": {
+    "kokoro-mlx": {
+      "provider": "mlx",
+      "model_name": "mlx-community/Kokoro-82M-bf16",
+      "sample_rate": 24000,
+      "voice": "af_heart",
+      "speed": 1.3,
+      "lang_code": "a"
+    },
+    "soprano-mlx": {
+      "provider": "mlx",
+      "model_name": "mlx-community/Soprano-1.1-80M-bf16",
+      "sample_rate": 32000,
+      "temperature": 0.3
+    },
+    "pocket-tts-mlx": {
+      "provider": "mlx",
+      "model_name": "mlx-community/pocket-tts",
+      "sample_rate": 24000,
+      "voice": "alba",
+      "stream": true
+    },
+    "zonos3-mini-mlx": {
+      "provider": "mlx",
+      "model_name": "mlx-community/ZONOS3-Mini",
+      "sample_rate": 44100,
+      "voice": "jett",
+      "lang_code": "en",
+      "stream": true
+    },
+    "kokoro": {
+      "provider": "kokoro",
+      "model_name": "hexgrad/Kokoro-82M",
+      "sample_rate": 24000,
+      "voice_name": "af_heart",
+      "speed": 1.3
+    },
+    "phonon": {
+      "provider": "phonon",
+      "model_name": "hf://gradium/phonon-31m-en",
+      "sample_rate": 24000,
+      "voice_name": "Easton",
+      "lang": "en",
+      "quant": "q8"
+    },
+    "supertonic": {
+      "provider": "supertonic",
+      "model_name": "supertonic-3",
+      "sample_rate": 44100,
+      "voice_name": "F1",
+      "speed": 1.05
+    }
+  },
+  "TTS_CONFIG": "pocket-tts-mlx"
 }

@@ -13,10 +13,15 @@ from __future__ import annotations
 
 from typing import Optional
 
+from rich.markup import escape
+
 from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 
 from .chat_message import ChatMessage
+
+
+_MAX_ARGS = 80
 
 
 class ChatView(VerticalScroll):
@@ -39,11 +44,28 @@ class ChatView(VerticalScroll):
         return iter(())  # rows are mounted dynamically
 
     # ── posting completed lines ──────────────────────────────────────────
+    # User and LLM text is escaped: a "[1]" or "[/]" in it is not markup.
+    # post_bot takes markup: it is for the app's own messages.
     def post_user(self, text: str) -> None:
-        self._mount(ChatMessage.user(text))
+        self._mount(ChatMessage.user(escape(text)))
 
     def post_bot(self, text: str) -> None:
         self._mount(ChatMessage.bot(text))
+
+    def post_tool(self, name: str, args: dict) -> None:
+        """A tool call the bot made. Splits the bot turn: text after the
+        call goes in a new bubble below it."""
+        bubble = self._active_bot
+        if bubble is not None:
+            if bubble.text:
+                self._message_count += 1
+            else:
+                bubble.remove()  # nothing said yet: drop the empty bubble
+            self._active_bot = None
+        shown = ", ".join(f"{k}={v!r}" for k, v in args.items())
+        if len(shown) > _MAX_ARGS:
+            shown = shown[: _MAX_ARGS - 1] + "…"
+        self._mount(ChatMessage.tool(f"[b]{escape(name)}[/b]({escape(shown)})"), count=False)
 
     # ── streaming a bot turn ─────────────────────────────────────────────
     def start_bot_turn(self) -> None:
@@ -55,7 +77,7 @@ class ChatView(VerticalScroll):
             self.start_bot_turn()
         assert self._active_bot is not None
         try:
-            self._active_bot.append(chunk)
+            self._active_bot.append(escape(chunk))
             self.scroll_end(animate=False)
         except Exception:
             # widget may have been removed during a /clear or unmount

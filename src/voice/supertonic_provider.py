@@ -24,14 +24,16 @@ logger = get_logger("voice.supertonic")
 class SupertonicTTS(BaseTTS):
     """Supertonic TTS integration for Beta-1."""
 
-    def __init__(self, voice_name: str = "F1", speed: float = 1.0):
+    def __init__(
+        self, model_name: str = "supertonic-3", voice_name: str = "F1", speed: float = 1.0, **kwargs,
+    ):
         self.sample_rate = 44100
         self.voice_name = voice_name
         self.speed = speed
         self.total_steps = 8
         
         logger.info("Initializing Supertonic TTS engine...")
-        self.tts = TTS(auto_download=True)
+        self.tts = TTS(model=model_name, auto_download=True)
         self.style = self.tts.get_voice_style(voice_name=self.voice_name)
         self._warmup()
         logger.info("Supertonic TTS initialized with voice style: %s (speed: %.1f)", self.voice_name, self.speed)

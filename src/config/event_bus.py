@@ -41,6 +41,13 @@ class TurnEnd:
 
 
 @dataclass
+class ToolCall:
+    """The chat agent called a tool."""
+    name: str
+    args: dict
+
+
+@dataclass
 class UserMessage:
     """The user said something (e.g. transcribed speech)."""
     text: str

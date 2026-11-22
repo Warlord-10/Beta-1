@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, VerticalScroll
-from textual.widgets import Button, Input, Label, Static, Switch
+from textual.widgets import Button, Input, Label, Select, Static, Switch
 
 
 # Top-level keys that take effect immediately when saved.
@@ -20,6 +20,15 @@ IMMUTABLE_KEYS: frozenset[str] = frozenset({
     "LOG_MODE",
     "TTS_PROVIDER",
 })
+
+# Keys with their own widget below (not a plain row).
+CUSTOM_KEYS: frozenset[str] = frozenset({"STT_CONFIG", "TTS_CONFIG"})
+
+# Model dropdowns: widget id -> (selected-key setting, model-list setting).
+MODEL_SELECTS = {
+    "set--stt-model": ("STT_CONFIG", "STT_MODEL_LIST"),
+    "set--tts-model": ("TTS_CONFIG", "TTS_MODEL_LIST"),
+}
 
 
 def _wid(*parts: str) -> str:
@@ -39,6 +48,7 @@ class SettingsPane(VerticalScroll):
     }
     SettingsPane Input  { width: 1fr; }
     SettingsPane Switch { width: 8; }
+    SettingsPane Select { width: 1fr; }
     SettingsPane .section { padding: 1 0 0 0; color: $accent; }
     SettingsPane .locked-value {
         width: 1fr;
@@ -69,30 +79,24 @@ class SettingsPane(VerticalScroll):
 
         yield Static(
             "\n[b]Restart required[/]   "
-            "[dim]🔒 Read-only — edit config/settings.json and restart[/]",
+            "[dim]Applies after a restart · 🔒 rows: edit config/settings.json[/]",
             classes="section", markup=True,
         )
         for key, value in self._top_level_scalars(SETTINGS, IMMUTABLE_KEYS):
             yield from self._row(key, value, editable=False)
 
-        tts_cfg = getattr(SETTINGS, "TTS_CONFIG", None)
-        if isinstance(tts_cfg, dict):
-            yield Static(
-                "\n[b]TTS_CONFIG[/]   [dim]🔒 Read-only — restart required[/]",
-                classes="section", markup=True,
-            )
-            for provider, params in tts_cfg.items():
-                yield Static(f"  [b]{provider}[/]", classes="section", markup=True)
-                if not isinstance(params, dict):
-                    continue
-                for sub_key, sub_val in params.items():
-                    yield from self._row(
-                        sub_key, sub_val, editable=False,
-                        label=f"    {sub_key}",
-                    )
+        for widget_id, (key, list_key) in MODEL_SELECTS.items():
+            with Horizontal(classes="row"):
+                yield Label(f"{key[:3]} model:", classes="label")
+                yield Select(
+                    [(name, name) for name in getattr(SETTINGS, list_key)],
+                    value=getattr(SETTINGS, key),
+                    allow_blank=False,
+                    id=widget_id,
+                )
 
         leftover = list(self._top_level_scalars(
-            SETTINGS, exclude=MUTABLE_KEYS | IMMUTABLE_KEYS,
+            SETTINGS, exclude=MUTABLE_KEYS | IMMUTABLE_KEYS | CUSTOM_KEYS,
         ))
         if leftover:
             yield Static(
@@ -135,6 +139,20 @@ class SettingsPane(VerticalScroll):
                 yield Static(str(value), classes="locked-value")
 
     # ── persistence ──────────────────────────────────────────────────────
+    def on_select_changed(self, event: Select.Changed) -> None:
+        from src.config.settings import SETTINGS
+
+        key = MODEL_SELECTS.get(event.select.id, (None,))[0]
+        if key is None or event.value == getattr(SETTINGS, key):
+            return
+        # The running ASR/TTS keeps its model; this only picks the next start's.
+        setattr(SETTINGS, key, event.value)
+        try:
+            SETTINGS.save()
+            self._status(f"[green]✓ {key[:3]} model set to {event.value} — restart to apply[/]")
+        except Exception as e:
+            self._status(f"[red]✗ Save failed: {e}[/]")
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "settings-save":
             self._save()

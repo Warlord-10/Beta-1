@@ -53,21 +53,56 @@ class Settings:
     # DeepFilterNet noise suppression on the mic path. Off by default: it runs
     # on every mic block and slows TTS synthesis ~3x via CPU/GIL contention.
     IS_DEEPFILTERNET_ENABLED: bool = False
-    STT_CONFIG: dict[str, Any] = field(
+    # Every selectable STT model: name -> provider config. STT_CONFIG names
+    # the one to load (picked in the TUI settings tab; applies on restart).
+    STT_MODEL_LIST: dict[str, dict[str, Any]] = field(
         default_factory=lambda: {
-            "provider": "mlx",
-            "model_name": "parakeet-tdt-0.6b-v3",
+            "parakeet-0.6b-v3": {"provider": "mlx", "model_name": "parakeet-tdt-0.6b-v3"},
         }
     )
+    STT_CONFIG: str = "parakeet-0.6b-v3"
 
-    TTS_SAMPLE_RATE: int = 24000
-    TTS_CONFIG: dict[str, Any] = field(
+    # Same shape as STT. Each entry also names its output sample_rate, which
+    # playback and the echo canceller run at (stripped before the provider).
+    TTS_MODEL_LIST: dict[str, dict[str, Any]] = field(
         default_factory=lambda: {
-            "provider": "kokoro",
-            "voice_name": "af_heart",
-            "speed": 1.3,
+            "kokoro-mlx": {
+                "provider": "mlx", "model_name": "mlx-community/Kokoro-82M-bf16",
+                "voice": "af_heart", "speed": 1.3, "lang_code": "a", "sample_rate": 24000,
+            },
+            "soprano-mlx": {
+                "provider": "mlx", "model_name": "mlx-community/Soprano-1.1-80M-bf16",
+                "temperature": 0.3, "sample_rate": 32000,
+            },
+            "pocket-tts-mlx": {
+                "provider": "mlx", "model_name": "mlx-community/pocket-tts",
+                "voice": "alba", "stream": True, "sample_rate": 24000,
+            },
+            "zonos3-mini-mlx": {
+                "provider": "mlx", "model_name": "mlx-community/ZONOS3-Mini",
+                "voice": "jett", "lang_code": "en", "stream": True, "sample_rate": 44100,
+            },
+            "kokoro": {
+                "provider": "kokoro", "model_name": "hexgrad/Kokoro-82M",
+                "voice_name": "af_heart", "speed": 1.3, "sample_rate": 24000,
+            },
+            "phonon": {
+                "provider": "phonon", "model_name": "hf://gradium/phonon-31m-en",
+                "voice_name": "Easton", "lang": "en", "quant": "q8", "sample_rate": 24000,
+            },
+            "supertonic": {
+                "provider": "supertonic", "model_name": "supertonic-3",
+                "voice_name": "F1", "speed": 1.05, "sample_rate": 44100,
+            },
         }
     )
+    TTS_CONFIG: str = "kokoro-mlx"
+
+    @property
+    def TTS_SAMPLE_RATE(self) -> int:
+        # ponytail: read once at startup by TTS/AEC; picking another model in
+        # the TUI changes this live, but nothing re-reads it until restart.
+        return self.TTS_MODEL_LIST[self.TTS_CONFIG]["sample_rate"]
 
     def persistent_keys(self) -> list[str]:
         """Field names that represent real config — excludes runtime-injected

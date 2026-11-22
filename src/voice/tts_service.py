@@ -47,7 +47,8 @@ class TTSService:
     def __init__(self):
         # MLX ties a model to the thread that builds it, so the engine is
         # built in stream(), on the worker thread that also uses it.
-        self._tts_config = SETTINGS.TTS_CONFIG
+        cfg = SETTINGS.TTS_MODEL_LIST[SETTINGS.TTS_CONFIG]
+        self._tts_config = {k: v for k, v in cfg.items() if k != "sample_rate"}
         self.provider = self._tts_config.get("provider", "tts")
         self.tts = None
         self.sample_rate = SETTINGS.TTS_SAMPLE_RATE
@@ -89,6 +90,11 @@ class TTSService:
         finally:
             self._stream.close()
             logger.info("TTS worker stopped")
+
+    @property
+    def playing(self) -> bool:
+        """True while the speaker stream runs, i.e. the bot is talking."""
+        return not self._idle
 
     def shutdown(self) -> None:
         LLMChunkQueue.put(None)
