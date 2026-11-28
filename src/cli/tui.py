@@ -278,10 +278,18 @@ class TUI(App):
         elif cmd in self.TAB_IDS:
             self.query_one(TabbedContent).active = cmd
             self.chat_view.post_bot(f"📂 Switched to the [b]{cmd}[/] tab.")
-        elif cmd == "mic":
-            self.action_toggle_mic()
-        elif cmd == "speaker":
-            self.action_toggle_speaker()
+        elif cmd in ("mic", "sound", "speaker"):
+            is_on, toggle = (
+                (IsASREnabled, self.action_toggle_mic) if cmd == "mic"
+                else (IsTTSEnabled, self.action_toggle_speaker)
+            )
+            arg = parts[1].lower() if len(parts) > 1 else None
+            if arg not in (None, "on", "off"):
+                self.chat_view.post_bot(f"❓ Usage: [b]/{cmd} on[/] or [b]/{cmd} off[/].")
+            elif arg is None or (arg == "on") != is_on():
+                toggle()
+            else:
+                self.chat_view.post_bot(f"Already {arg}.")
         elif cmd == "help":
             self.chat_view.post_bot(self._help_text())
         elif cmd == "clear":
@@ -315,8 +323,8 @@ class TUI(App):
             "  [b]/costs[/]      Open the cost tab\n"
             "  [b]/database[/]   Open the live SQL tab\n"
             "  [b]/editor[/]     Open the file editor tab\n"
-            "  [b]/mic[/]        Toggle the microphone (Ctrl+L)\n"
-            "  [b]/speaker[/]    Toggle the speaker\n"
+            "  [b]/mic on|off[/]    Turn the microphone on/off (Ctrl+L toggles)\n"
+            "  [b]/sound on|off[/]  Turn the speaker on/off\n"
             "  [b]/clear[/]      Clear the conversation (Ctrl+K)\n"
             "  [b]/theme[/]      Toggle dark/light theme (Ctrl+D)\n"
             "  [b]/approve[/]    Approve the current plan (when prompted)\n"

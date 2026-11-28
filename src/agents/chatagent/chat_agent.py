@@ -183,10 +183,10 @@ class ChatAgent:
         self.checkpointer = InMemorySaver()
         # One attempt only: SDK retries back off silently (up to a minute)
         # while the user waits in silence. Fail fast and say so instead.
-        self.llm = llm_factory.create("GEMINI_3_1_FLASH_LITE", temperature=1, max_tokens=256, max_retries=1)
+        self.llm = llm_factory.create("GEMINI_3_5_FLASH_LITE", temperature=1, max_tokens=256, max_retries=1)
         # Not Gemma: its free tier allows 16k input tokens/minute, the same as
         # CHAT_CONTEXT_WINDOW, so summarising a full context always hit 429.
-        self.summary_llm = llm_factory.create("GEMINI_3_1_FLASH_LITE", temperature=0, max_tokens=1024*2)
+        self.summary_llm = llm_factory.create("GEMINI_3_5_FLASH_LITE", temperature=0, max_tokens=1024*2)
 
         # Today's conversation is persisted to chats/<date>/beta_1.jsonl and
         # restored on startup. `_seed` holds messages to prepend to the next
